@@ -616,5 +616,158 @@ class ShoppingTests(unittest.TestCase):
             srv.shutdown()
 
 
+class MockCollectAndGo(BaseHTTPRequestHandler):
+    """Stands in for the Collect&Go gateway: checks the headers a real call needs and keeps a cart."""
+    cart = []
+    seen = []
+    mode = "ok"          # ok | throttle_cart | throttle_all
+    TOKEN = "1234567%2CsecretTOKENvalue"
+
+    def log_message(self, *a):
+        pass
+
+    def _reply(self, code, obj=None):
+        body = json.dumps(obj if obj is not None else {}).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _handle(self, method):
+        from urllib.parse import parse_qs, unquote, urlparse
+        u = urlparse(self.path)
+        q = {k: v[0] for k, v in parse_qs(u.query).items()}
+        MockCollectAndGo.seen.append((method, u.path, q))
+        cookie = self.headers.get("Cookie", "")
+        if self.headers.get("x-cg-apikey") != "502b657c-624c-11eb-8024-f4d06b721e80":
+            return self._reply(403)
+        if self.headers.get("wcauthtoken") != self.TOKEN or "WC_AUTHENTICATION_1234567=" + self.TOKEN not in cookie:
+            return self._reply(401)
+        if "_ga=" in cookie or "reese84" in cookie:
+            return self._reply(400)                      # tracking / bot cookies must not be replayed
+        if self.mode == "throttle_all" or (self.mode == "throttle_cart" and "/cart" in u.path):
+            return self._reply(456)
+        if "/productview/bySearchTerm/" in u.path:
+            term = unquote(u.path.rsplit("/", 1)[-1])
+            return self._reply(200, {"catalogEntryView": [
+                {"uniqueID": f"{9000 + i}", "partNumber": f"{500 + i}-P", "name": f"{term.capitalize()} {i}", "manufacturer": "Boni",
+                 "content": "1 st", "buyable": True, "price": [{"usage": "Offer", "value": "9.99"}, {"usage": "Display", "value": f"{1 + i}.29"}]}
+                for i in range(int(q.get("pageSize", 3)))]})
+        if u.path.endswith("/cart/@self") and method == "GET":
+            if q.get("catalogId") != "10646":
+                return self._reply(500)
+            return self._reply(200, {"orderItem": list(self.cart), "grandTotal": "12,50"})
+        if u.path.endswith("/cart") and method == "POST":
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            item = body["orderItem"][0]
+            if item["xitem_field2"] != f"P|{item['quantity']}|st":
+                return self._reply(400)
+            MockCollectAndGo.cart.append({"orderItemId": f"L{len(self.cart) + 1}", "partNumber": item["productId"],
+                                          "quantity": item["quantity"], "productName": "Citroen"})
+            return self._reply(201, {"orderId": "1"})
+        if u.path.endswith("/delete_order_item") and method == "DELETE":
+            MockCollectAndGo.cart[:] = [i for i in self.cart if i["orderItemId"] != q.get("orderItemId")]
+            return self._reply(200)
+        if u.path.endswith("/order/@history"):
+            return self._reply(200, {"Order": []})
+        self._reply(404)
+
+    def do_GET(self):
+        self._handle("GET")
+
+    def do_POST(self):
+        self._handle("POST")
+
+    def do_DELETE(self):
+        self._handle("DELETE")
+
+
+class ColruytTests(unittest.TestCase):
+    GOOD = ("WC_SESSION_ESTABLISHED=true; WC_ACTIVEPOINTER=-1001%2C90004; COL_SHOP=CLPBE_10646; _ga=GA1.2.3; reese84=abc; "
+            "WC_AUTHENTICATION_1234567=1234567%2CsecretTOKENvalue; WC_USERACTIVITY_1234567=1234567%2C90004%2Cnull")
+
+    def setUp(self):
+        import colruyt
+        self.c = colruyt
+        self.srv = ThreadingHTTPServer(("127.0.0.1", 0), MockCollectAndGo)
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        base = f"http://127.0.0.1:{self.srv.server_address[1]}"
+        self._old = (colruyt.CART, colruyt.SEARCH, colruyt.ORDERS)
+        colruyt.CART, colruyt.SEARCH, colruyt.ORDERS = base + "/cartsvc/store/90004", base + "/searchsvc/store/90004", base + "/ordersvc/store/90004"
+        MockCollectAndGo.cart, MockCollectAndGo.seen, MockCollectAndGo.mode = [], [], "ok"
+        self.db = DB(os.path.join(tempfile.mkdtemp(), "c.db"))
+
+    def tearDown(self):
+        self.c.CART, self.c.SEARCH, self.c.ORDERS = self._old
+        self.srv.shutdown()
+
+    def test_parse_what_people_paste(self):
+        P = self.c.parse_session
+        want = {"WC_SESSION_ESTABLISHED", "WC_ACTIVEPOINTER", "COL_SHOP", "WC_AUTHENTICATION_1234567", "WC_USERACTIVITY_1234567"}
+        curl_b = f"curl 'https://www.collectandgo.be/x' -H 'accept: */*' -b '{self.GOOD}' -H 'user-agent: X'"
+        curl_h = f'curl "https://www.collectandgo.be/x" -H "accept: */*" -H "Cookie: {self.GOOD}" --compressed'
+        table = "WC_AUTHENTICATION_1234567\t1234567%2CsecretTOKENvalue\t.collectandgo.be\t/\nCOL_SHOP\tCLPBE_10646\t.collectandgo.be"
+        for text in (self.GOOD, "Cookie: " + self.GOOD, curl_b, curl_h):
+            self.assertEqual(set(P(text)), want, text[:40])
+        self.assertEqual(P(table), {"WC_AUTHENTICATION_1234567": "1234567%2CsecretTOKENvalue", "COL_SHOP": "CLPBE_10646"})
+        self.assertEqual(P("WC_AUTHENTICATION_1234567=1234567%2CsecretTOKENvalue"), {"WC_AUTHENTICATION_1234567": "1234567%2CsecretTOKENvalue"})
+        self.assertEqual(P("1234567,secretTOKENvalue"), {"WC_AUTHENTICATION_1234567": "1234567%2CsecretTOKENvalue"})
+        for junk in ("", "hallo", "curl https://www.collectandgo.be -H 'accept: */*'", "COL_SHOP=CLPBE_10646; _ga=1"):
+            self.assertEqual(P(junk), {}, junk)
+
+    def test_connect_check_and_no_secret_in_state(self):
+        with self.assertRaises(self.c.ColruytError):
+            self.c.connect(self.db, "dit is geen sessie")
+        self.assertFalse(self.c.status(self.db)["connected"])
+        st = self.c.connect(self.db, self.GOOD)
+        self.assertEqual((st["connected"], st["ok"], st["account"]), (True, True, "…4567"))
+        from main import App
+        blob = json.dumps(App(self.db).state())
+        self.assertNotIn("secretTOKENvalue", blob)
+        self.assertNotIn("WC_USERACTIVITY", blob)
+        self.c.disconnect(self.db)
+        self.assertFalse(self.c.status(self.db)["connected"])
+
+    def test_read_search_and_write_tests(self):
+        self.c.connect(self.db, self.GOOD)
+        self.assertTrue(all(s["ok"] for s in self.c.test(self.db, "read")["steps"]))
+        found = self.c.test(self.db, "search", "melk")
+        self.assertTrue(found["steps"][0]["ok"])
+        self.assertEqual((found["products"][0]["name"], found["products"][0]["brand"], found["products"][0]["price"]), ("Melk 0", "Boni", 1.29))
+        MockCollectAndGo.cart.append({"orderItemId": "L0", "partNumber": "9000", "quantity": "2", "productName": "Al in de mand"})
+        result = self.c.test(self.db, "write")
+        self.assertEqual([s["ok"] for s in result["steps"]], [True, True, True, True], result)
+        self.assertEqual([i["orderItemId"] for i in MockCollectAndGo.cart], ["L0"])          # own line untouched, test line gone
+        posts = [x for x in MockCollectAndGo.seen if x[0] == "POST"]
+        self.assertEqual(len(posts), 1)
+        self.assertEqual(posts[0][2]["catalogId"], "10646")                                   # store catalogue from COL_SHOP
+
+    def test_expired_and_throttled_are_told_apart(self):
+        self.c.connect(self.db, self.GOOD.replace("secretTOKENvalue", "oldTOKEN"))
+        st = self.c.status(self.db)
+        self.assertEqual((st["connected"], st["ok"]), (True, False))
+        self.c.connect(self.db, self.GOOD)
+        MockCollectAndGo.mode = "throttle_cart"
+        self.assertTrue(self.c.check(self.db)["ok"])                                           # falls back to order history
+        MockCollectAndGo.mode = "throttle_all"
+        st = self.c.check(self.db)
+        self.assertIsNone(st["ok"])                                                            # unknown, not "expired"
+        self.assertIn("vertragen", st["message"])
+        self.assertFalse(self.c.test(self.db, "read")["steps"][0]["ok"])
+
+    def test_daily_check_runs_once_a_day(self):
+        from main import App
+        app = App(self.db)
+        day = datetime(2026, 12, 1, 9, 0)
+        self.assertFalse(app.colruyt_daily_check(day))                                         # not connected: nothing to do
+        self.c.connect(self.db, self.GOOD)
+        before = len(MockCollectAndGo.seen)
+        self.assertTrue(app.colruyt_daily_check(day))
+        self.assertFalse(app.colruyt_daily_check(day.replace(hour=18)))
+        self.assertEqual(len(MockCollectAndGo.seen), before + 1)
+        self.assertTrue(app.colruyt_daily_check(day + timedelta(days=1)))
+
+
 if __name__ == "__main__":
     unittest.main()

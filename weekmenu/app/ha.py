@@ -8,6 +8,7 @@ import os
 import urllib.request
 from datetime import timedelta
 
+import colruyt
 import selector
 import shopping
 
@@ -75,7 +76,9 @@ def publish(db, job_state=None):
         _post_state("sensor.weekmenu_status", "bezig" if job.get("running") else ("fout" if job.get("error") else "ok"), {
             "friendly_name": "Weekmenu status", "icon": "mdi:chef-hat", "recepten": stats.get("ok") or 0,
             "hoofdgerechten": stats.get("main") or 0, "nog_op_te_halen": stats.get("todo") or 0,
-            "laatste_fout": job.get("error"), "laatste_run": job.get("finished")})
+            "laatste_fout": job.get("error"), "laatste_run": job.get("finished"),
+            "colruyt": (lambda c: "niet ingesteld" if not c["connected"] else "verlopen" if c["ok"] is False else "verbonden")(
+                colruyt.status(db))})
         return True
     except Exception as e:  # Home Assistant restarting, etc.
         print(f"[warning] HA-sensoren niet bijgewerkt: {e}", flush=True)

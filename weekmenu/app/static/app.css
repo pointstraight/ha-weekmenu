@@ -93,3 +93,5 @@ progress { width: 100%; height: 10px; accent-color: var(--accent); }
 @media print { .top, .row .btn, #shopsel { display: none !important; } body { background: #fff; } .card { border: 0; } }
 .days .ings { margin-top: 6px; font-size: 0.88rem; line-height: 1.5; color: var(--muted); max-width: 70ch; }
 .days .ings .n { font-weight: 600; }
+.card a { color: var(--accent); text-underline-offset: 3px; }
+.days .dish a { color: var(--ink); }

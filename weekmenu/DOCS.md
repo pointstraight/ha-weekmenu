@@ -56,6 +56,27 @@ Het tabblad **Boodschappen** toont de lijst voor het gekozen weekmenu:
 De lijst volgt het menu: vervang je een dag, dan verandert de lijst mee. Aantal personen en de
 lijsten stel je in bij Instellingen → Boodschappen.
 
+## Colruyt / Collect&Go
+
+Het tabblad **Colruyt** verbindt de app met je Collect&Go-account. Colruyt biedt geen publieke
+toegang; de app gebruikt dezelfde adressen als de website, met de sessie van een browser waarin
+je zelf inlogde. Dat is niet officieel ondersteund en kan zonder waarschuwing stoppen met werken.
+
+Verbinden (op een computer):
+
+1. Open collectandgo.be, log in met je Xtra-account (Colruyt vraagt zelf zijn sms-code) en kies je winkel.
+2. Druk op F12 (Mac: ⌥⌘I) → tabblad Netwerk → klik op een verzoek naar collectandgo.be → rechtsklik →
+   Kopiëren → Kopiëren als cURL.
+3. Plak het in het tabblad Colruyt en klik **Verbind**.
+
+De app bewaart alleen de sessiecookies (nooit je wachtwoord of sms-code) en toont ze nergens.
+Een sessie blijft dagen tot weken geldig; de app controleert ze één keer per dag en meldt het
+wanneer je opnieuw moet verbinden.
+
+Met de testknoppen zie je of de koppeling vanaf jouw toestel werkt: winkelmand lezen, het
+assortiment doorzoeken, en één testproduct toevoegen en weer verwijderen. Bestellen en betalen
+doet de app nooit; dat doe je zelf in Collect&Go.
+
 ## AI (optioneel)
 
 Zonder API-sleutel werkt alles: het type wordt met woordregels bepaald en de keuze is

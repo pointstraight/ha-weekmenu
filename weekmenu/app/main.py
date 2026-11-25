@@ -14,6 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 import ai
+import colruyt
 import ha
 import selector
 import shopping
@@ -21,7 +22,7 @@ from crawler import BASE, Crawler
 from db import DB, TAGS, now_iso
 from recipe_parser import PARSER_VERSION
 
-VERSION = "0.2.1"
+VERSION = "0.3.0"
 PORT = int(os.environ.get("WEEKMENU_PORT", "8099"))
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 ALLOWED_CLIENTS = {"172.30.32.2", "127.0.0.1", "::1"}  # HA ingress proxy only
@@ -151,11 +152,25 @@ class App:
             return True
         return False
 
+    def colruyt_daily_check(self, now=None):
+        """One cart read a day, so an expired Collect&Go login is noticed before the weekly run."""
+        settings = self.db.get_settings()
+        today = (now or self.local_now(settings)).date().isoformat()
+        st = colruyt.status(self.db)
+        if not st["connected"] or st["ok"] is False or self.kv_get("colruyt_check_day") == today:
+            return False
+        self.kv_set("colruyt_check_day", today)
+        after = colruyt.check(self.db)
+        if after["ok"] is False:
+            self.db.log("Collect&Go-sessie is verlopen: verbind opnieuw op het tabblad Colruyt", "warning")
+        return True
+
     def scheduler_loop(self):
         last_publish = 0.0
         while not self.shutdown.wait(30):
             try:
                 self.scheduler_tick()
+                self.colruyt_daily_check()
                 if time.monotonic() - last_publish > 300:
                     ha.publish(self.db, self.job)
                     last_publish = time.monotonic()
@@ -202,6 +217,7 @@ class App:
                                                              "last_update": self.kv_get("last_update")},
             "menus": self.menus(settings, today),
             "pool": self.pool_stats(settings, today),
+            "colruyt": colruyt.status(db),
             "selftest": self.kv_get("selftest"),
             "next_run": nxt.strftime("%Y-%m-%d %H:%M") if nxt else None,
             "log": db.q("SELECT ts, level, msg FROM log ORDER BY id DESC LIMIT 40"),
@@ -332,6 +348,18 @@ class Handler(BaseHTTPRequestHandler):
                     tidying = app.start_job("tidy", start=date.fromisoformat(body["start"]))
                 ha.publish(app.db, app.job)
                 return self._send(200, {"ok": True, "tidying": tidying})
+            if path == "/api/colruyt/connect":
+                return self._send(200, colruyt.connect(app.db, str(body.get("paste") or "")))
+            if path == "/api/colruyt/check":
+                return self._send(200, colruyt.check(app.db))
+            if path == "/api/colruyt/test":
+                mode = body.get("mode")
+                if mode not in ("read", "search", "write"):
+                    return self._send(400, {"error": "onbekende test"})
+                return self._send(200, colruyt.test(app.db, mode, str(body.get("query") or "melk")[:60]))
+            if path == "/api/colruyt/disconnect":
+                colruyt.disconnect(app.db)
+                return self._send(200, {"ok": True})
             if path == "/api/check":
                 shopping.set_checked(app.db, date.fromisoformat(body["start"]), str(body["key"]), bool(body.get("checked")))
                 ha.publish(app.db, app.job)
@@ -352,6 +380,8 @@ class Handler(BaseHTTPRequestHandler):
                     app.db.x("UPDATE recipes SET blocked=? WHERE url=?", (int(bool(body["blocked"])), url))
                 return self._send(200, {"ok": True})
             self._send(404, {"error": "niet gevonden"})
+        except colruyt.ColruytError as e:
+            self._send(400, {"error": str(e)})
         except (KeyError, ValueError) as e:
             self._send(400, {"error": str(e)})
         except Exception as e:

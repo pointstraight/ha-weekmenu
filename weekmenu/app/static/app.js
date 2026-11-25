@@ -4,6 +4,7 @@ let S = null;            // last state from the server
 let tab = "menu";
 let shopStart = null;    // which menu the shopping tab shows
 let shopDetails = false;
+let cgResult = null;      // last Collect&Go test result
 let showIngredients = true;   // ingredient lines under each dish on the Menu tab
 try { showIngredients = localStorage.getItem("weekmenu.ingredients") !== "0"; } catch (e) { /* storage not available */ }
 let timer = null;
@@ -31,7 +32,7 @@ async function refresh(force) {
   try { S = await api("api/state"); } catch (e) { toast("Geen verbinding: " + e.message); return; }
   renderJob();
   const editing = document.activeElement && ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName);
-  if (force || !(editing || tab === "settings")) render();
+  if (force || !(editing || tab === "settings" || tab === "colruyt")) render();
   clearTimeout(timer);
   timer = setTimeout(refresh, S.job.running ? 2500 : 30000);
 }
@@ -45,7 +46,7 @@ function renderJob() {
   else el.hidden = true;
 }
 function render() {
-  ({ menu: renderMenu, shopping: renderShopping, settings: renderSettings, catalog: renderCatalog, status: renderStatus })[tab]();
+  ({ menu: renderMenu, shopping: renderShopping, colruyt: renderColruyt, settings: renderSettings, catalog: renderCatalog, status: renderStatus })[tab]();
 }
 
 /* ---------- Menu ---------- */
@@ -148,6 +149,46 @@ function renderShopping() {
         ${S.ai.available && L.method === "regels" ? `<button class="btn" data-tidy="${m.start}" ${busy ? "disabled" : ""}>Opschonen met AI</button>` : ""}</div></div>
     ${L.count ? cats : `<p class="muted" style="margin-top:14px">Geen ingrediënten gevonden voor dit menu.</p>`}
     ${pantry}</div>`;
+}
+
+/* ---------- Colruyt / Collect&Go connection ---------- */
+function cgForm(label) {
+  return `<ol class="steps">
+      <li>Open <a href="https://www.collectandgo.be" target="_blank" rel="noopener">collectandgo.be</a> in een nieuw tabblad, log in met je Xtra-account en kies je winkel. Colruyt vraagt daarbij zelf zijn sms-code; deze app ziet je wachtwoord en die code nooit.</li>
+      <li>Blijf op collectandgo.be en druk op <b>F12</b> (op een Mac: <b>⌥⌘I</b>). Open het tabblad <b>Netwerk</b> (Network), klik op een verzoek naar collectandgo.be, rechtsklik en kies <b>Kopiëren → Kopiëren als cURL</b>.</li>
+      <li>Plak het hieronder en klik op ${esc(label)}.</li></ol>
+    <p class="muted">Dit lukt alleen op een computer, niet op een telefoon. Alternatief voor stap 2: tabblad Application → Cookies → de cookie die begint met WC_AUTHENTICATION_ (naam en waarde).</p>
+    <textarea id="cgpaste" placeholder="Plak hier het gekopieerde cURL-commando of de cookie" aria-label="Gekopieerde sessie" style="min-height:110px"></textarea>
+    <div class="row" style="margin-top:10px"><button class="btn primary" id="cgconnect">${esc(label)}</button>
+      <span class="muted">Alleen de sessiecookies worden bewaard, in de gegevens van deze app.</span></div>`;
+}
+function renderColruyt() {
+  const c = S.colruyt, root = $("#tab-colruyt");
+  const state = !c.connected ? ["Niet verbonden", "busy"] : c.ok === false ? ["Verlopen – opnieuw verbinden", "error"] : c.ok ? ["Verbonden", ""] : ["Verbonden, nog niet bevestigd", "busy"];
+  const res = cgResult ? `<h3>Resultaat van de test</h3><ul class="shop">${cgResult.steps.map((s) => `<li><span class="what"><b>${s.ok ? "Gelukt" : "Mislukt"}</b> · ${esc(s.step)}</span><span class="amount" style="white-space:normal;text-align:right">${esc(s.detail)}</span></li>`).join("")}</ul>
+    ${cgResult.products && cgResult.products.length ? `<div class="scroll"><table><thead><tr><th>Product</th><th>Merk</th><th>Inhoud</th><th class="num">Prijs</th></tr></thead><tbody>${cgResult.products.map((p) => `<tr><td>${esc(p.name)}</td><td>${esc(p.brand)}</td><td>${esc(p.content)}</td><td class="num">${p.price == null ? "–" : "€ " + p.price.toFixed(2).replace(".", ",")}</td></tr>`).join("")}</tbody></table></div>` : ""}` : "";
+  const body = !c.connected || c.ok === false
+    ? `<p>${c.ok === false ? "De sessie bij Collect&Go is verlopen. Log opnieuw in en verbind opnieuw:" : "Verbind de app met je Collect&Go-account om later je boodschappenlijst naar je winkelmand te sturen:"}</p>${cgForm("Verbind")}`
+    : `<table><tbody>
+        <tr><th>Account</th><td>${esc(c.account || "–")}</td></tr>
+        <tr><th>Verbonden sinds</th><td>${fmtTs(c.saved_at)}</td></tr>
+        <tr><th>Laatst gecontroleerd</th><td>${fmtTs(c.checked_at)}${c.message ? " · " + esc(c.message) : ""}</td></tr></tbody></table>
+      <h3>Testen</h3>
+      <div class="row"><button class="btn" data-cgtest="read">Lees winkelmand</button>
+        <input type="search" id="cgq" value="melk" aria-label="Zoekterm" style="width:140px"><button class="btn" data-cgtest="search">Zoek in assortiment</button></div>
+      <div class="row" style="margin-top:10px"><button class="btn" data-cgtest="write">Test toevoegen en verwijderen</button>
+        <span class="muted">Zet één citroen in je echte winkelmand en haalt die er meteen weer uit.</span></div>
+      ${res}
+      <details style="margin-top:18px;border-top:1px solid var(--line);padding-top:10px"><summary style="cursor:pointer;font-weight:600;min-height:32px">Opnieuw verbinden of verbreken</summary>
+        ${cgForm("Verbind opnieuw")}
+        <div class="row" style="margin-top:14px"><button class="btn danger" id="cgdisconnect">Verbreek verbinding</button><span class="muted">Wist de bewaarde sessie uit deze app.</span></div></details>`;
+  root.innerHTML = `<div class="card"><div class="row spread"><h2>Collect&amp;Go</h2><span class="pill ${state[1]}">${state[0]}</span></div>
+    <p class="muted">Niet-officiële koppeling: Colruyt biedt geen publieke toegang, dus dit kan zonder waarschuwing stoppen met werken. Bestellen en betalen doe je altijd zelf in Collect&amp;Go.</p>
+    ${body}</div>`;
+}
+async function cgAct(fn, done) {
+  try { const r = await fn(); if (r && r.steps) cgResult = r; if (done) toast(done); } catch (e) { toast(e.message); }
+  await refresh(true);
 }
 
 /* ---------- Settings ---------- */
@@ -288,6 +329,9 @@ document.addEventListener("click", (e) => {
   if (d.replace) return act(() => api("api/replace", { start: d.start, day: d.replace }));
   if (d.never) return act(async () => { await api("api/recipe", { url: d.never, blocked: true }); await api("api/replace", { start: d.start, day: d.day }); }, "Gerecht wordt niet meer voorgesteld");
   if (d.approve) return act(() => api("api/approve", { start: d.approve, undo: !!d.undo }), d.undo ? "Menu heropend" : "Menu goedgekeurd");
+  if (t.id === "cgconnect") { const v = $("#cgpaste").value; if (!v.trim()) return toast("Plak eerst de gekopieerde sessie"); t.disabled = true; return cgAct(() => api("api/colruyt/connect", { paste: v }), "Sessie bewaard en gecontroleerd"); }
+  if (t.id === "cgdisconnect") { cgResult = null; return cgAct(() => api("api/colruyt/disconnect", {}), "Verbinding verbroken"); }
+  if (d.cgtest) { t.disabled = true; t.textContent = "Bezig…"; return cgAct(() => api("api/colruyt/test", { mode: d.cgtest, query: ($("#cgq") || {}).value || "melk" })); }
   if (d.tidy) return act(() => api("api/job", { kind: "tidy", start: d.tidy }), "Lijst wordt opgeschoond");
   if (t.id === "shopdetails") { shopDetails = !shopDetails; return renderShopping(); }
   if (t.id === "toggleings") {

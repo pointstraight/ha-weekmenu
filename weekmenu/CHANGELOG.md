@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.0
+- Nieuw tabblad Colruyt: verbind de app met je Collect&Go-account (sessie plakken, geen wachtwoord), met status en tests voor lezen, zoeken en toevoegen/verwijderen.
+- Dagelijkse controle van de sessie; `sensor.weekmenu_status` toont of de koppeling verbonden of verlopen is.
+- Nog geen automatisch vullen van de winkelmand: dat volgt zodra de tests op jouw toestel slagen.
+
 ## 0.2.1
 - Menu: onder elk gerecht staan de ingrediënten, omgerekend naar jouw aantal personen (knop om ze te verbergen).
 

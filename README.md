@@ -30,3 +30,9 @@ to the recipe. It fetches each recipe once, one request per second, and respects
 Run against the real site outside Home Assistant:
 
     WEEKMENU_DEV=1 WEEKMENU_DATA=./data python3 weekmenu/app/main.py
+
+## Credits
+
+The Collect&Go connection (endpoints, headers and request shapes) follows the findings of
+[oelegeirnaert/ha-collect-and-go](https://github.com/oelegeirnaert/ha-collect-and-go) (MIT licence).
+Collect&Go has no public API; this is unofficial, not affiliated with Colruyt Group, and never checks out.
