@@ -300,7 +300,18 @@ class MockAI(BaseHTTPRequestHandler):
         req = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         MockAI.calls.append((self.headers.get("x-api-key"), req["model"]))
         user = req["messages"][0]["content"]
-        if "classify" in req["system"]:
+        if "shopping list" in req["system"]:
+            groups = {}
+            for m in re.finditer(r"^(\d+) \| ([^|]+) \|", user, re.M):
+                word = m.group(2).strip().lower().split()[-1]
+                word = {"uien": "ui", "ajuin": "ui", "ajuinen": "ui", "knoflook": "look"}.get(word, word)
+                groups.setdefault(word, []).append(int(m.group(1)))
+            out = [{"name": k, "category": "Groenten & fruit" if k in ("ui", "look") else "Geen echt rayon", "ids": v}
+                   for k, v in groups.items()]
+            out[0]["ids"].append(9999)                       # unknown id: must be ignored
+            dropped = out.pop()                               # model "forgets" a group: lines must survive anyway
+            MockAI.dropped = dropped["ids"]
+        elif "classify" in req["system"]:
             out = [{"id": int(m.group(1)), "tag": "fish" if "mossel" in m.group(2) else "meat", "veg_strict": False}
                    for m in re.finditer(r"^(\d+)\. (.*)$", user, re.M)]
         else:
@@ -465,6 +476,127 @@ class FilterTests(unittest.TestCase):
             names = {d["name"] for d in selector.menu_view(self.db, start)["days"]}
             for bad in ("barbecue", "Gazpacho", "grill", "rog", "Herten", "truffel", "zwezerik", "Oesters"):
                 self.assertFalse(any(bad in n and "Roggebrood" not in n for n in names), (bad, names))
+
+
+class ShoppingTests(unittest.TestCase):
+    RECIPES = {
+        "a": ("Rigatoni met gehaktballen", "4 personen", ["800 g gemengd gehakt", "3 rode ajuinen", "2 teentjes look", "Olijfolie",
+                                                         "4 dl tomaten passata", "400 g rigatoni", "enkele takjes peterselie", "Zout", "1 ei"]),
+        "b": ("Stoofpotje met ui", "2 personen", ["Ajuin 1", "Look: 1 teentje", "Room 1 dl", "Wortels 3", "boter", "200 g gemengd gehakt",
+                                                  "Peterselie enkele takjes", "2 eieren"]),
+        "c": ("Uiensoep", "4", ["1 kg uien", "1 l runderbouillon", "2 el bloem", "100 g gruyère", "4 sneetjes brood", "1 ui"]),
+    }
+
+    def setUp(self):
+        import shopping
+        self.shopping = shopping
+        self.db = DB(os.path.join(tempfile.mkdtemp(), "s.db"))
+        self.start = date(2026, 12, 1)
+        self.db.x("INSERT INTO menus(start, created_at, status, method, notes) VALUES(?,?,?,?,?)",
+                  (self.start.isoformat(), "x", "proposed", "regels", "[]"))
+        for i, (key, (name, serves, ings)) in enumerate(self.RECIPES.items()):
+            self.db.x("""INSERT INTO recipes(url, slug, name, category, minutes, yield, ingredients, tag, status, is_main)
+                         VALUES(?,?,?,?,?,?,?,?,?,1)""", (key, key, name, "Hoofdgerecht", 30, serves, json.dumps(ings), "meat", "ok"))
+            self.db.x("INSERT INTO menu_items(start, day, url, reason, active, created_at) VALUES(?,?,?,?,1,?)",
+                      (self.start.isoformat(), (self.start + timedelta(days=i)).isoformat(), key, "", "x"))
+
+    def items(self, **changes):
+        if changes:
+            self.db.save_settings(changes)
+        data = self.shopping.build(self.db, self.start)
+        flat = {i["name"].lower(): i for c in data["categories"] for i in c["items"]}
+        return data, flat
+
+    def test_parse_both_orders(self):
+        P = self.shopping.parse_line
+        for a, b in (("800 g gemengd gehakt", "Gemengd gehakt 800 g"), ("2 teentjes look", "Look: 2 teentjes"),
+                     ("1 aubergine", "Aubergine 1"), ("0,5 bosje bieslook", "Bieslook 0,5 bosje"),
+                     ("enkele takjes peterselie", "Peterselie enkele takjes"), ("2 dl room", "Room: 2 dl")):
+            x, y = P(a), P(b)
+            self.assertEqual((x["base"], x["unit"], x["name"].lower()), (y["base"], y["unit"], y["name"].lower()), (a, b))
+        self.assertEqual(P("1 l melk")["base"], 1000)
+        self.assertEqual((P("1 limoen")["base"], P("1 limoen")["unit"], P("1 limoen")["name"]), (1, "", "limoen"))
+        self.assertEqual(P("1 ½ dl room")["base"], 150)
+        self.assertEqual(P("2-3 wortels")["base"], 3)
+        self.assertEqual(P("een halve citroen")["base"], 0.5)
+        self.assertEqual((P("1 ui, fijngesnipperd")["name"], P("1 ui, fijngesnipperd")["note"]), ("ui", "fijngesnipperd"))
+        self.assertIsNone(P("Olijfolie")["base"])
+        self.assertEqual(P("1 blik kikkererwten (400 g)")["unit"], "blik")
+
+    def test_merge_scale_and_sections(self):
+        data, flat = self.items()
+        self.assertEqual(data["persons"], 4)
+        # gehakt: 800 g (for 4) + 200 g for 2 scaled to 4 = 1,2 kg
+        self.assertEqual(flat["gemengd gehakt"]["amount"], "1,2 kg")
+        self.assertEqual(sorted(flat["gemengd gehakt"]["recipes"]), ["Rigatoni met gehaktballen", "Stoofpotje met ui"])
+        # ajuin/ui/uien merge: 1 (x2) + 1 kg + 1; rode ajuinen stay apart
+        onion = next(i for k, i in flat.items() if k in ("ui", "ajuin", "uien"))
+        self.assertEqual(onion["amount"], "1 kg + 3")
+        self.assertEqual(flat["rode ajuinen"]["amount"], "3")
+        self.assertEqual(flat["look"]["amount"], "4 teentjes")          # 2 + 1x2
+        self.assertEqual(flat["room"]["amount"], "2 dl")                # 1 dl x2
+        self.assertEqual(next(i for k, i in flat.items() if k in ("ei", "eieren"))["amount"], "5")     # 1 + 2x2
+        self.assertEqual(flat["peterselie"]["amount"], "")              # only "enkele takjes": no number to add up
+        cats = {i["name"].lower(): c["name"] for c in data["categories"] for i in c["items"]}
+        self.assertEqual(cats["gemengd gehakt"], "Vlees & gevogelte")
+        self.assertEqual(cats["rigatoni"], "Pasta, rijst & droge voeding")
+        self.assertEqual(cats["room"], "Zuivel & eieren")
+        self.assertEqual(cats["runderbouillon"], "Conserven, sauzen & olie")
+        self.assertEqual(cats["wortels"], "Groenten & fruit")
+        # staples are kept, but apart
+        pantry = {i["name"].lower() for i in data["pantry"]}
+        self.assertTrue({"zout", "olijfolie", "boter", "bloem"} <= pantry, pantry)
+        self.assertNotIn("zout", flat)
+        self.assertEqual(data["lines"], sum(len(r[2]) for r in self.RECIPES.values()))
+
+    def test_persons_staples_and_extras_are_settings(self):
+        data, flat = self.items(persons=2, staples="room\nzout", weekly_extras="Melk\nkoffie")
+        self.assertEqual(flat["gemengd gehakt"]["amount"], "600 g")     # half of 1,2 kg
+        self.assertEqual(flat["room"]["amount"] if "room" in flat else None, None)
+        self.assertIn("room", {i["name"].lower() for i in data["pantry"]})
+        self.assertIn("olijfolie", flat)                                 # no longer a staple
+        extras = [c for c in data["categories"] if c["name"] == "Vaste producten"][0]["items"]
+        self.assertEqual([i["name"] for i in extras], ["Koffie", "Melk"])
+
+    def test_checks_persist_and_reset_with_new_menu(self):
+        data, flat = self.items()
+        key = flat["room"]["key"]
+        self.shopping.set_checked(self.db, self.start, key, True)
+        data, flat = self.items()
+        self.assertTrue(flat["room"]["checked"])
+        self.assertEqual(data["open"], data["count"] - 1)
+        self.shopping.set_checked(self.db, self.start, key, False)
+        self.assertFalse(self.items()[1]["room"]["checked"])
+        self.shopping.set_checked(self.db, self.start, key, True)
+        fill_catalog(self.db, 60)
+        selector.generate(self.db, start=self.start, seed=1, today=date(2026, 11, 30))
+        self.assertEqual(self.db.q("SELECT * FROM shopping_checks"), [])
+
+    def test_ai_tidy_groups_but_code_keeps_every_line_and_does_the_sums(self):
+        import ai
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), MockAI)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        old_url, ai.API_URL = ai.API_URL, f"http://127.0.0.1:{srv.server_address[1]}/v1/messages"
+        os.environ["ANTHROPIC_API_KEY"] = "test-key"
+        try:
+            before = self.shopping.build(self.db, self.start)
+            self.assertEqual(before["method"], "regels")
+            self.assertTrue(self.shopping.tidy(self.db, self.start))
+            after = self.shopping.build(self.db, self.start)
+            self.assertEqual(after["method"], "AI opgeschoond")
+            every = [i for c in after["categories"] for i in c["items"]] + after["pantry"]
+            self.assertEqual(sum(len(i["lines"]) for i in every), before["lines"])       # nothing lost, nothing doubled
+            self.assertTrue(MockAI.dropped)                                               # the mock really left a group out
+            onion = next(i for i in every if i["name"].lower() == "ui")
+            self.assertEqual(onion["amount"], "1 kg + 6")                                # mock merges rode ajuinen too: 3+2+1
+            self.assertTrue(all(c["name"] in self.shopping.CATEGORIES for c in after["categories"]))
+            # a changed menu invalidates the stored AI grouping
+            self.db.save_settings({"persons": 6})
+            self.assertEqual(self.shopping.build(self.db, self.start)["method"], "regels")
+        finally:
+            ai.API_URL = old_url
+            os.environ.pop("ANTHROPIC_API_KEY", None)
+            srv.shutdown()
 
 
 if __name__ == "__main__":

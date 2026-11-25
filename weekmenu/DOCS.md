@@ -38,6 +38,21 @@ samenstellingen en `*truffel*` raakt het woord overal.
 
 Kan een regel niet gehaald worden (te weinig recepten), dan staat dat bovenaan het voorstel.
 
+## Boodschappen
+
+Het tabblad **Boodschappen** toont de lijst voor het gekozen weekmenu:
+
+- hoeveelheden zijn omgerekend van het aantal personen van het recept naar jouw aantal personen;
+- hetzelfde product uit verschillende recepten wordt samengeteld (ui, uien en ajuin zijn één product);
+- de lijst is gegroepeerd per rayon en je kunt afvinken wat je hebt;
+- producten die je normaal in huis hebt (zout, peper, olijfolie, boter…) staan apart onderaan;
+- "Altijd toevoegen" zet vaste producten elke week op de lijst;
+- "Toon details" laat per product zien uit welke recepten en regels het komt;
+- "Kopieer als tekst" zet de open producten op het klembord.
+
+De lijst volgt het menu: vervang je een dag, dan verandert de lijst mee. Aantal personen en de
+lijsten stel je in bij Instellingen → Boodschappen.
+
 ## AI (optioneel)
 
 Zonder API-sleutel werkt alles: het type wordt met woordregels bepaald en de keuze is
@@ -46,6 +61,10 @@ willekeurig binnen de regels. Met een Anthropic API-sleutel (tabblad Configurati
 - **Slimme keuze**: één kleine oproep per voorstel, voor variatie en seizoen.
 - **Onduidelijke recepten**: alleen recepten waar de regels het type niet konden bepalen,
   één keer per recept.
+
+- **Boodschappenlijst opschonen**: één oproep wanneer je een menu goedkeurt. AI bepaalt alleen welke
+  regels hetzelfde product zijn en in welk rayon ze horen; optellen doet de app zelf, en geen enkele
+  regel kan daarbij verloren gaan.
 
 Het verbruik (aantal oproepen en tokens) staat op het tabblad Status. Het ophalen van
 recepten gebruikt nooit AI.
@@ -57,6 +76,7 @@ recepten gebruikt nooit AI.
 | `sensor.weekmenu` | `voorstel`, `goedgekeurd` of `geen` | `dagen` (lijst), `te_beoordelen`, `start`, `einde`, `opmerkingen` |
 | `sensor.weekmenu_vandaag` | gerecht van vandaag | `url`, `minuten`, `type` |
 | `sensor.weekmenu_morgen` | gerecht van morgen | `url`, `minuten`, `type` |
+| `sensor.weekmenu_boodschappen` | aantal nog te kopen producten | `items` (naam, hoeveelheid, rayon, afgevinkt) |
 | `sensor.weekmenu_status` | `ok`, `bezig` of `fout` | aantallen, `laatste_fout` |
 
 Kaart voor het dashboard:

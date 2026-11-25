@@ -43,6 +43,12 @@ DEFAULT_SETTINGS = {
         "*truffel*", "schorseneer*", "schorseneren", "aardpeer*", "topinamboer*", "postelein", "raapstelen",
         "kardoen*", "yuzu*", "tonkaboon*", "vadouvan", "kombu", "bottarga", "nduja", "guanciale",
     ],
+    # shopping list
+    "persons": 4,
+    "staples": ["zout", "peper", "zwarte peper", "witte peper", "peper van de molen", "water", "olijfolie", "olie",
+                "boter", "bloem", "suiker"],                                # shown apart as "probably at home"
+    "weekly_extras": [],                                                    # added to every list
+    "ai_shopping": True,                                                    # one AI call when a menu is approved
     "strict_vegetarian": False,        # True: stock, fish sauce, gelatine... break "vegetarian"
     "main_categories": ["hoofdgerecht"],
     "allow_unknown_category": False,
@@ -75,6 +81,8 @@ CREATE INDEX IF NOT EXISTS menu_items_start ON menu_items(start);
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS log(
   id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, level TEXT, msg TEXT);
+CREATE TABLE IF NOT EXISTS shopping_checks(start TEXT, key TEXT, PRIMARY KEY(start, key));
+CREATE TABLE IF NOT EXISTS shopping_ai(start TEXT PRIMARY KEY, signature TEXT, data TEXT, created_at TEXT);
 CREATE TABLE IF NOT EXISTS ai_usage(
   id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, purpose TEXT, model TEXT,
   input_tokens INTEGER, output_tokens INTEGER);
@@ -171,7 +179,7 @@ def validate_settings(new, current):
             mix[tag] = {"min": lo, "max": max(lo, hi)}
         out["mix"] = mix
     for key, lo, hi in (("weekday_max_minutes", 5, 600), ("weekend_max_minutes", 0, 600),
-                        ("no_repeat_weeks", 0, 104), ("run_weekday", 0, 6),
+                        ("no_repeat_weeks", 0, 104), ("run_weekday", 0, 6), ("persons", 1, 20),
                         ("start_offset_days", 0, 6)):
         if key in new:
             out[key] = _int(new[key], lo, hi, current[key])
@@ -179,7 +187,7 @@ def validate_settings(new, current):
         out["long_days"] = sorted({_int(d, 0, 6, 0) for d in new["long_days"]})
     if new.get("unknown_time") in ("never", "long_days", "any"):
         out["unknown_time"] = new["unknown_time"]
-    for key in ("exclusions", "main_categories", "winter_words", "summer_words", "rare_words"):
+    for key in ("exclusions", "main_categories", "winter_words", "summer_words", "rare_words", "staples", "weekly_extras"):
         if key in new:
             val = new[key]
             if isinstance(val, str):
@@ -187,7 +195,7 @@ def validate_settings(new, current):
             if isinstance(val, list):
                 out[key] = [str(v).strip().lower() for v in val if str(v).strip()][:300]
     for key in ("strict_vegetarian", "allow_unknown_category", "auto_run", "ai_selection", "ai_tagging",
-                "season_filter", "everyday_only"):
+                "season_filter", "everyday_only", "ai_shopping"):
         if key in new:
             out[key] = bool(new[key])
     if "run_time" in new:

@@ -9,6 +9,7 @@ import urllib.request
 from datetime import timedelta
 
 import selector
+import shopping
 
 CORE_API = "http://supervisor/core/api"
 
@@ -61,6 +62,13 @@ def publish(db, job_state=None):
             "einde": shown["end"] if shown else None, "opmerkingen": shown["problems"] if shown else [],
             "dagen": [{"datum": d["date"], "dag": d["weekday"], "gerecht": d.get("name"), "minuten": d.get("minutes"),
                        "type": d.get("tag_nl"), "url": d.get("url")} for d in (shown["days"] if shown else [])]})
+        if shown:
+            lst = shopping.build(db, selector.date.fromisoformat(shown["start"]), settings)
+            items = [{"naam": i["name"], "hoeveelheid": i["amount"], "rayon": c["name"], "afgevinkt": i["checked"]}
+                     for c in lst["categories"] for i in c["items"]]
+            _post_state("sensor.weekmenu_boodschappen", lst["open"], {
+                "friendly_name": "Weekmenu boodschappen", "icon": "mdi:cart-outline", "unit_of_measurement": "items",
+                "start": shown["start"], "personen": lst["persons"], "items": items[:150]})
         stats = db.one("SELECT COUNT(*) AS total, SUM(status='ok') AS ok, SUM(status='ok' AND is_main=1) AS main, "
                        "SUM(status='new') AS todo FROM recipes") or {}
         job = job_state or {}

@@ -16,11 +16,12 @@ from urllib.parse import parse_qs, urlparse
 import ai
 import ha
 import selector
+import shopping
 from crawler import BASE, Crawler
 from db import DB, TAGS, now_iso
 from recipe_parser import PARSER_VERSION
 
-VERSION = "0.1.1"
+VERSION = "0.2.0"
 PORT = int(os.environ.get("WEEKMENU_PORT", "8099"))
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 ALLOWED_CLIENTS = {"172.30.32.2", "127.0.0.1", "::1"}  # HA ingress proxy only
@@ -77,6 +78,9 @@ class App:
                     # the weekly menu must not depend on the site being reachable that morning
                     self.job["error"] = f"bijwerken mislukt: {type(e).__name__}: {e}"
                     self.db.log(f"Catalogus bijwerken mislukt, menu wordt toch gemaakt: {e}", "warning")
+            if kind == "tidy":
+                prog["step"] = "boodschappenlijst opschonen (AI)"
+                shopping.tidy(self.db, kw["start"])
             if kind in ("generate", "weekly") and not self.stop.is_set():
                 prog["step"] = "menu samenstellen"
                 selector.generate(self.db, start=kw.get("start"), use_ai=kw.get("use_ai"))
@@ -196,13 +200,22 @@ class App:
             "job": self.job,
             "catalog": {k: (v or 0) for k, v in c.items()} | {"by_tag": by_tag, "quick_by_tag": quick_by_tag,
                                                              "last_update": self.kv_get("last_update")},
-            "menus": [m for m in (selector.menu_view(db, s, settings) for s in selector.current_menus(db, today)) if m],
+            "menus": self.menus(settings, today),
             "pool": self.pool_stats(settings, today),
             "selftest": self.kv_get("selftest"),
             "next_run": nxt.strftime("%Y-%m-%d %H:%M") if nxt else None,
             "log": db.q("SELECT ts, level, msg FROM log ORDER BY id DESC LIMIT 40"),
             "parser_version": PARSER_VERSION,
         }
+
+    def menus(self, settings, today):
+        out = []
+        for start in selector.current_menus(self.db, today):
+            view = selector.menu_view(self.db, start, settings)
+            if view:
+                view["shopping"] = shopping.build(self.db, start, settings)
+                out.append(view)
+        return out
 
     def recipes(self, q="", tag="", scope="main"):
         where, args = ["status='ok'"], []
@@ -287,13 +300,15 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {"ok": True})
             if path == "/api/job":
                 kind = body.get("kind")
-                if kind not in ("selftest", "update", "generate", "weekly"):
+                if kind not in ("selftest", "update", "generate", "weekly", "tidy"):
                     return self._send(400, {"error": "onbekende taak"})
                 kw = {}
                 if body.get("start"):
                     kw["start"] = date.fromisoformat(body["start"])
                 if "use_ai" in body:
                     kw["use_ai"] = bool(body["use_ai"])
+                if kind == "tidy" and not (kw.get("start") and ai.available()):
+                    return self._send(400, {"error": "geen menu gekozen of geen API-sleutel ingesteld"})
                 if not app.start_job(kind, **kw):
                     return self._send(409, {"error": "er loopt al een taak"})
                 return self._send(200, {"ok": True})
@@ -308,11 +323,20 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/approve":
                 status = "proposed" if body.get("undo") else "approved"
                 app.db.x("UPDATE menus SET status=? WHERE start=?", (status, body["start"]))
+                tidying = False
+                if status == "approved" and app.db.get_settings()["ai_shopping"] and ai.available():
+                    tidying = app.start_job("tidy", start=date.fromisoformat(body["start"]))
+                ha.publish(app.db, app.job)
+                return self._send(200, {"ok": True, "tidying": tidying})
+            if path == "/api/check":
+                shopping.set_checked(app.db, date.fromisoformat(body["start"]), str(body["key"]), bool(body.get("checked")))
                 ha.publish(app.db, app.job)
                 return self._send(200, {"ok": True})
             if path == "/api/delete":
                 app.db.x("DELETE FROM menu_items WHERE start=?", (body["start"],))
                 app.db.x("DELETE FROM menus WHERE start=?", (body["start"],))
+                app.db.x("DELETE FROM shopping_checks WHERE start=?", (body["start"],))
+                app.db.x("DELETE FROM shopping_ai WHERE start=?", (body["start"],))
                 ha.publish(app.db, app.job)
                 return self._send(200, {"ok": True})
             if path == "/api/recipe":

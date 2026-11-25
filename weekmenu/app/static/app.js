@@ -2,6 +2,8 @@
 // Weekmenu UI. All URLs are relative so the page works behind Home Assistant ingress.
 let S = null;            // last state from the server
 let tab = "menu";
+let shopStart = null;    // which menu the shopping tab shows
+let shopDetails = false;
 let timer = null;
 const $ = (sel, root = document) => root.querySelector(sel);
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -41,7 +43,7 @@ function renderJob() {
   else el.hidden = true;
 }
 function render() {
-  ({ menu: renderMenu, settings: renderSettings, catalog: renderCatalog, status: renderStatus })[tab]();
+  ({ menu: renderMenu, shopping: renderShopping, settings: renderSettings, catalog: renderCatalog, status: renderStatus })[tab]();
 }
 
 /* ---------- Menu ---------- */
@@ -102,6 +104,48 @@ function menuCard(m, busy) {
     <ul class="days">${days}</ul></div>`;
 }
 
+/* ---------- Shopping list ---------- */
+function shopMenu() {
+  const live = S.menus.filter((m) => m.end >= S.today).sort((a, b) => a.start.localeCompare(b.start));
+  const all = live.length ? live : S.menus;
+  return all.find((m) => m.start === shopStart) || all.find((m) => m.status === "proposed") || all[all.length - 1] || null;
+}
+function shopText(m) {
+  const L = m.shopping, out = [`Boodschappen ${fmtDate(m.start)} – ${fmtDate(m.end)} (${L.persons} personen)`];
+  for (const c of L.categories) {
+    const open = c.items.filter((i) => !i.checked);
+    if (!open.length) continue;
+    out.push("", c.name.toUpperCase());
+    for (const i of open) out.push(`- ${i.name}${i.amount ? ": " + i.amount : ""}`);
+  }
+  return out.join("\n");
+}
+function shopRow(m, i) {
+  const extra = i.also_unmeasured ? " + wat extra" : "";
+  const from = shopDetails && i.recipes.length ? `<div class="muted">${esc(i.recipes.join(" · "))}</div>${i.lines.map((l) => `<div class="muted raw">${esc(l)}</div>`).join("")}` : "";
+  return `<li class="${i.checked ? "done" : ""}"><label><input type="checkbox" data-check="${esc(i.key)}" data-start="${m.start}" ${i.checked ? "checked" : ""}>
+    <span class="what">${esc(i.name)}${from}</span></label><span class="amount">${esc(i.amount + (i.amount ? extra : ""))}</span></li>`;
+}
+function renderShopping() {
+  const root = $("#tab-shopping"), m = shopMenu();
+  if (!m) { root.innerHTML = `<div class="card"><p class="muted">Nog geen weekmenu, dus ook nog geen boodschappenlijst.</p></div>`; return; }
+  const L = m.shopping, busy = S.job.running;
+  const live = S.menus.filter((x) => x.end >= S.today).sort((a, b) => a.start.localeCompare(b.start));
+  const picker = live.length > 1 ? `<select id="shopsel" aria-label="Kies menu">${live.map((x) => `<option value="${x.start}" ${x.start === m.start ? "selected" : ""}>${fmtDate(x.start)} – ${fmtDate(x.end)}</option>`).join("")}</select>` : "";
+  const cats = L.categories.map((c) => `<h3>${esc(c.name)}</h3><ul class="shop">${c.items.map((i) => shopRow(m, i)).join("")}</ul>`).join("");
+  const pantry = L.pantry.length ? `<details class="pantry"><summary>Wellicht in huis (${L.pantry.length})</summary><ul class="shop">${L.pantry.map((i) => `<li><span class="what">${esc(i.name)}</span><span class="amount">${esc(i.amount)}</span></li>`).join("")}</ul></details>` : "";
+  root.innerHTML = `<div class="card">
+    <div class="row spread"><div><h2>Boodschappen ${fmtDate(m.start)} – ${fmtDate(m.end)}</h2>
+      <div class="row" style="margin-top:6px"><span class="pill ${L.open ? "busy" : ""}">${L.open} van ${L.count} te kopen</span>
+        <span class="muted">voor ${L.persons} personen · ${esc(L.method)}${m.status === "approved" ? "" : " · menu nog niet goedgekeurd"}</span></div></div>
+      <div class="row">${picker}
+        <button class="btn" id="shopcopy">Kopieer als tekst</button>
+        <button class="btn" id="shopdetails">${shopDetails ? "Verberg details" : "Toon details"}</button>
+        ${S.ai.available && L.method === "regels" ? `<button class="btn" data-tidy="${m.start}" ${busy ? "disabled" : ""}>Opschonen met AI</button>` : ""}</div></div>
+    ${L.count ? cats : `<p class="muted" style="margin-top:14px">Geen ingrediënten gevonden voor dit menu.</p>`}
+    ${pantry}</div>`;
+}
+
 /* ---------- Settings ---------- */
 function renderSettings() {
   const s = S.settings, root = $("#tab-settings");
@@ -116,6 +160,15 @@ function renderSettings() {
     <div class="scroll"><table class="mix"><thead><tr><th>Type</th><th>Minimum</th><th>Maximum</th><th class="num">Beschikbaar</th></tr></thead><tbody>${mixRows}</tbody></table></div>
     <div class="field"><label for="sv">Strikt vegetarisch</label><div><input id="sv" type="checkbox" name="strict_vegetarian" ${s.strict_vegetarian ? "checked" : ""}></div>
       <div class="hint">Aan: gerechten met kippenbouillon, vissaus, gelatine of ansjovis tellen niet als vegetarisch.</div></div>
+    <h3>Boodschappen</h3>
+    <div class="field"><label for="pe">Aantal personen</label><div><input id="pe" type="number" name="persons" min="1" max="20" value="${s.persons}"></div>
+      <div class="hint">Hoeveelheden worden omgerekend vanaf het aantal personen van elk recept.</div></div>
+    <div class="field"><label for="st">In huis (niet kopen)</label><div><textarea id="st" name="staples">${esc(s.staples.join("\n"))}</textarea></div>
+      <div class="hint">Eén product per regel. Staan apart onderaan de lijst.</div></div>
+    <div class="field"><label for="wx">Altijd toevoegen</label><div><textarea id="wx" name="weekly_extras" placeholder="bv. melk">${esc(s.weekly_extras.join("\n"))}</textarea></div>
+      <div class="hint">Vaste producten die elke week op de lijst komen.</div></div>
+    <div class="field"><label for="aib">Lijst opschonen met AI</label><div><input id="aib" type="checkbox" name="ai_shopping" ${s.ai_shopping ? "checked" : ""}></div>
+      <div class="hint">${S.ai.available ? "Eén AI-oproep wanneer je een menu goedkeurt: voegt dezelfde producten samen en zet ze in het juiste rayon. De hoeveelheden worden altijd door de app zelf opgeteld." : "Geen API-sleutel ingesteld: de lijst wordt met regels samengesteld."}</div></div>
     <h3>Tijd</h3>
     <div class="field"><label for="wd">Maximum op weekdagen</label><div><input id="wd" type="number" name="weekday_max_minutes" min="5" max="600" value="${s.weekday_max_minutes}"> minuten</div></div>
     <div class="field"><label for="we">Maximum op ruime dagen</label><div><input id="we" type="number" name="weekend_max_minutes" min="0" max="600" value="${s.weekend_max_minutes}"> minuten</div><div class="hint">0 = geen limiet.</div></div>
@@ -154,9 +207,9 @@ function renderSettings() {
 function readSettings(form) {
   const f = new FormData(form), out = { mix: {} };
   for (const t of S.tags) out.mix[t] = { min: +f.get(`mix.${t}.min`), max: +f.get(`mix.${t}.max`) };
-  for (const k of ["weekday_max_minutes", "weekend_max_minutes", "no_repeat_weeks", "run_weekday", "start_offset_days", "crawl_pause_seconds"]) out[k] = +f.get(k);
-  for (const k of ["strict_vegetarian", "ai_selection", "ai_tagging", "auto_run", "season_filter", "everyday_only"]) out[k] = f.get(k) === "on";
-  for (const k of ["winter_words", "summer_words", "rare_words"]) out[k] = f.get(k);
+  for (const k of ["weekday_max_minutes", "weekend_max_minutes", "no_repeat_weeks", "run_weekday", "start_offset_days", "crawl_pause_seconds", "persons"]) out[k] = +f.get(k);
+  for (const k of ["strict_vegetarian", "ai_selection", "ai_tagging", "auto_run", "season_filter", "everyday_only", "ai_shopping"]) out[k] = f.get(k) === "on";
+  for (const k of ["winter_words", "summer_words", "rare_words", "staples", "weekly_extras"]) out[k] = f.get(k);
   out.long_days = f.getAll("long_days").map(Number);
   out.unknown_time = f.get("unknown_time");
   out.run_time = f.get("run_time");
@@ -231,6 +284,9 @@ document.addEventListener("click", (e) => {
   if (d.replace) return act(() => api("api/replace", { start: d.start, day: d.replace }));
   if (d.never) return act(async () => { await api("api/recipe", { url: d.never, blocked: true }); await api("api/replace", { start: d.start, day: d.day }); }, "Gerecht wordt niet meer voorgesteld");
   if (d.approve) return act(() => api("api/approve", { start: d.approve, undo: !!d.undo }), d.undo ? "Menu heropend" : "Menu goedgekeurd");
+  if (d.tidy) return act(() => api("api/job", { kind: "tidy", start: d.tidy }), "Lijst wordt opgeschoond");
+  if (t.id === "shopdetails") { shopDetails = !shopDetails; return renderShopping(); }
+  if (t.id === "shopcopy") return navigator.clipboard.writeText(shopText(shopMenu())).then(() => toast("Lijst gekopieerd"), () => toast("Kopiëren lukt hier niet"));
   if (d.delete) return act(() => api("api/delete", { start: d.delete }), "Menu verwijderd");
   if (t.id === "stop") return act(() => api("api/stop", {}), "Stoppen…");
   if (t.id === "rsearch") return searchRecipes();
@@ -243,6 +299,17 @@ document.addEventListener("submit", (e) => {
 });
 document.addEventListener("change", (e) => {
   const d = e.target.dataset;
+  if (e.target.id === "shopsel") { shopStart = e.target.value; return renderShopping(); }
+  if (d.check) {
+    const m = S.menus.find((x) => x.start === d.start), on = e.target.checked;
+    for (const c of m.shopping.categories) for (const i of c.items) if (i.key === d.check) i.checked = on;
+    m.shopping.open += on ? -1 : 1;
+    e.target.closest("li").classList.toggle("done", on);
+    const pill = $("#tab-shopping .pill");
+    if (pill) pill.textContent = `${m.shopping.open} van ${m.shopping.count} te kopen`;
+    e.target.blur();
+    return api("api/check", { start: d.start, key: d.check, checked: on }).catch((err) => toast(err.message));
+  }
   if (d.tag) api("api/recipe", { url: d.tag, tag: e.target.value }).then(() => toast("Type aangepast"), (err) => toast(err.message));
   if (d.block) api("api/recipe", { url: d.block, blocked: e.target.checked }).then(() => toast(e.target.checked ? "Geblokkeerd" : "Weer toegelaten"), (err) => toast(err.message));
 });
