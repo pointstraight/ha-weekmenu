@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.2.1
+- Menu: onder elk gerecht staan de ingrediënten, omgerekend naar jouw aantal personen (knop om ze te verbergen).
+
 ## 0.2.0
 - Nieuw tabblad Boodschappen: lijst per weekmenu, omgerekend naar het aantal personen, zelfde producten samengevoegd, per rayon gegroepeerd en afvinkbaar.
 - Instellingen: aantal personen, producten die je in huis hebt, vaste producten voor elke week.

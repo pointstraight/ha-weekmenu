@@ -21,7 +21,7 @@ from crawler import BASE, Crawler
 from db import DB, TAGS, now_iso
 from recipe_parser import PARSER_VERSION
 
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 PORT = int(os.environ.get("WEEKMENU_PORT", "8099"))
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 ALLOWED_CLIENTS = {"172.30.32.2", "127.0.0.1", "::1"}  # HA ingress proxy only
@@ -213,6 +213,10 @@ class App:
         for start in selector.current_menus(self.db, today):
             view = selector.menu_view(self.db, start, settings)
             if view:
+                for day in view["days"]:
+                    if "ingredients" in day:
+                        day["ingredients"] = shopping.recipe_lines(day["ingredients"], day.pop("serves", None), settings["persons"])
+                view["persons"] = settings["persons"]
                 view["shopping"] = shopping.build(self.db, start, settings)
                 out.append(view)
         return out

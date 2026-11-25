@@ -335,7 +335,8 @@ def menu_view(db, start, settings=None):
     menu = db.one("SELECT * FROM menus WHERE start=?", (start.isoformat(),))
     if not menu:
         return None
-    rows = db.q("""SELECT m.day, m.reason, r.url, r.name, r.minutes, r.tag, r.veg_strict, r.image, r.tag_source
+    rows = db.q("""SELECT m.day, m.reason, r.url, r.name, r.minutes, r.tag, r.veg_strict, r.image, r.tag_source,
+                          r.ingredients, r.yield
                    FROM menu_items m JOIN recipes r ON r.url = m.url
                    WHERE m.start=? AND m.active=1 ORDER BY m.day""", (start.isoformat(),))
     by_day = {r["day"]: r for r in rows}
@@ -348,7 +349,8 @@ def menu_view(db, start, settings=None):
         if r:
             tag = effective_tag(r, settings)
             entry.update(name=r["name"], url=r["url"], minutes=r["minutes"], tag=tag, tag_nl=TAG_NL[tag],
-                         reason=r["reason"], image=r["image"])
+                         reason=r["reason"], image=r["image"], serves=r["yield"],
+                         ingredients=json.loads(r["ingredients"] or "[]"))
         days.append(entry)
     counts = Counter(d["tag"] for d in days if d.get("tag"))
     return {"start": start.isoformat(), "end": (start + timedelta(days=6)).isoformat(), "status": menu["status"],

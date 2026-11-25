@@ -229,8 +229,10 @@ def _dec(value):
     return text.replace(".", ",")
 
 
-def format_amount(parts):
-    """{'g': 800, '': 3} -> '800 g + 3'."""
+def format_amount(parts, exact=False):
+    """{'g': 800, '': 3} -> '800 g + 3'. exact=True keeps halves (for one recipe); otherwise counts are
+    rounded up to whole pieces (for buying)."""
+    whole = (lambda q: _dec(round(q * 4) / 4 or 0.25)) if exact else (lambda q: str(int(math.ceil(q - 1e-9))))
     out = []
     order = {"g": 0, "ml": 1, "": 2}
     for unit, qty in sorted(parts.items(), key=lambda kv: (order.get(kv[0], 3), kv[0])):
@@ -246,10 +248,10 @@ def format_amount(parts):
         elif unit in ("el", "tl"):
             out.append(f"{_dec(max(0.5, round(qty * 2) / 2))} {unit}")
         elif unit == "":
-            out.append(str(int(math.ceil(qty - 1e-9))))
+            out.append(whole(qty))
         else:
-            n = int(math.ceil(qty - 1e-9))
-            out.append(f"{n} {UNIT_PLURAL.get(unit, unit) if n != 1 else unit}")
+            n = whole(qty)
+            out.append(f"{n} {unit if n in ('1', '0,5', '0,25', '0,75') else UNIT_PLURAL.get(unit, unit)}")
     return " + ".join(out)
 
 
@@ -257,6 +259,24 @@ def servings_of(yield_text, default=4):
     m = re.search(r"\d+", str(yield_text or ""))
     n = int(m.group(0)) if m else default
     return n if 1 <= n <= 50 else default
+
+
+def recipe_lines(ingredients, yield_text, persons):
+    """Ingredient lines of one recipe, scaled to the household, as short display strings."""
+    factor = persons / servings_of(yield_text)
+    out = []
+    for raw in ingredients or []:
+        p = parse_line(raw)
+        name = p["name"]
+        if name[1:] == name[1:].lower():          # ordinary word: no capital; names like "Noilly Prat" keep theirs
+            name = name.lower()
+        if p["base"] is not None:
+            out.append(f'{format_amount({p["unit"] or "": p["base"] * factor}, exact=True)} {name}')
+        elif p["unit"] in VAGUE_UNITS:
+            out.append(f'{name} ({UNIT_PLURAL.get(p["unit"], p["unit"])})')
+        else:
+            out.append(name)
+    return out
 
 
 def _lines(db, start, settings):

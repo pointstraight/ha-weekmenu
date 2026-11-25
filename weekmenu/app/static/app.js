@@ -4,6 +4,8 @@ let S = null;            // last state from the server
 let tab = "menu";
 let shopStart = null;    // which menu the shopping tab shows
 let shopDetails = false;
+let showIngredients = true;   // ingredient lines under each dish on the Menu tab
+try { showIngredients = localStorage.getItem("weekmenu.ingredients") !== "0"; } catch (e) { /* storage not available */ }
 let timer = null;
 const $ = (sel, root = document) => root.querySelector(sel);
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -65,7 +67,8 @@ function renderMenu() {
   if (c.main) {
     html += `<div class="row spread" style="margin-bottom:12px">
       <span class="muted">${S.next_run ? "Volgende automatische run: " + esc(S.next_run) : "Automatische run staat uit"} · ${S.pool.pool} gerechten komen in aanmerking</span>
-      <button class="btn primary" data-job="generate" ${busy ? "disabled" : ""}>Voorstel voor volgende periode</button></div>`;
+      <div class="row"><button class="btn" id="toggleings">${showIngredients ? "Verberg ingrediënten" : "Toon ingrediënten"}</button>
+      <button class="btn primary" data-job="generate" ${busy ? "disabled" : ""}>Voorstel voor volgende periode</button></div></div>`;
   }
   if (c.main && !S.menus.length) html += `<div class="card"><p class="muted">Nog geen weekmenu. Maak een voorstel met de knop hierboven.</p></div>`;
   const order = [...S.menus].sort((a, b) => (a.end < S.today) - (b.end < S.today) || a.start.localeCompare(b.start));
@@ -88,7 +91,8 @@ function menuCard(m, busy) {
     const time = d.minutes ? `${d.minutes} min` : "tijd onbekend";
     return `<li class="${d.long_day ? "long" : ""}"><div class="when"><span class="wd">${esc(d.weekday)}</span><small>${fmtDate(d.date)}${today}</small></div>
       <div class="dish"><a href="${esc(d.url)}" target="_blank" rel="noopener">${esc(d.name)}</a>
-        <div class="meta"><span>${time}</span><span class="chip ${d.tag}">${esc(d.tag_nl)}</span>${d.reason && d.reason !== "vervangen" ? `<span>${esc(d.reason)}</span>` : ""}</div></div>
+        <div class="meta"><span>${time}</span><span class="chip ${d.tag}">${esc(d.tag_nl)}</span>${d.reason && d.reason !== "vervangen" ? `<span>${esc(d.reason)}</span>` : ""}</div>
+        ${showIngredients ? (d.ingredients && d.ingredients.length ? `<div class="ings"><span class="n">${d.ingredients.length} ingrediënten voor ${m.persons}:</span> ${d.ingredients.map(esc).join(" · ")}</div>` : `<div class="ings">Geen ingrediënten gevonden bij dit recept.</div>`) : ""}</div>
       <div class="acts">${past ? "" : `<button class="btn small" data-replace="${d.date}" data-start="${m.start}" ${busy ? "disabled" : ""}>Vervang</button>
         <button class="btn small danger" data-never="${esc(d.url)}" data-day="${d.date}" data-start="${m.start}" title="Dit gerecht nooit meer voorstellen" ${busy ? "disabled" : ""}>Nooit meer</button>`}</div></li>`;
   }).join("");
@@ -286,6 +290,11 @@ document.addEventListener("click", (e) => {
   if (d.approve) return act(() => api("api/approve", { start: d.approve, undo: !!d.undo }), d.undo ? "Menu heropend" : "Menu goedgekeurd");
   if (d.tidy) return act(() => api("api/job", { kind: "tidy", start: d.tidy }), "Lijst wordt opgeschoond");
   if (t.id === "shopdetails") { shopDetails = !shopDetails; return renderShopping(); }
+  if (t.id === "toggleings") {
+    showIngredients = !showIngredients;
+    try { localStorage.setItem("weekmenu.ingredients", showIngredients ? "1" : "0"); } catch (e) { /* storage not available */ }
+    return renderMenu();
+  }
   if (t.id === "shopcopy") return navigator.clipboard.writeText(shopText(shopMenu())).then(() => toast("Lijst gekopieerd"), () => toast("Kopiëren lukt hier niet"));
   if (d.delete) return act(() => api("api/delete", { start: d.delete }), "Menu verwijderd");
   if (t.id === "stop") return act(() => api("api/stop", {}), "Stoppen…");

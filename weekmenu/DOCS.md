@@ -19,6 +19,9 @@ naam, tijd, type en ingrediënten om te kunnen kiezen, en linkt naar het recept 
 Daarna loopt alles vanzelf: elke maandag om 06:00 haalt de app de nieuwe recepten op en
 maakt een voorstel voor dinsdag tot en met maandag. Dag, uur en startdag stel je in.
 
+Onder elk gerecht staan de ingrediënten, omgerekend naar jouw aantal personen. Met **Verberg
+ingrediënten** klap je ze dicht.
+
 ## Regels
 
 Deze regels worden in code afgedwongen, ook als AI de keuze maakt:

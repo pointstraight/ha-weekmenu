@@ -558,6 +558,23 @@ class ShoppingTests(unittest.TestCase):
         extras = [c for c in data["categories"] if c["name"] == "Vaste producten"][0]["items"]
         self.assertEqual([i["name"] for i in extras], ["Koffie", "Melk"])
 
+    def test_ingredients_per_dish_are_scaled_for_display(self):
+        R = self.shopping.recipe_lines
+        self.assertEqual(R(["800 g gemengd gehakt", "Chilipeper 0,5", "Look: 2 teentjes", "Olijfolie", "Peterselie enkele takjes",
+                            "3 dl Noilly Prat", "1 ei"], "4 personen", 4),
+                         ["800 g gemengd gehakt", "0,5 chilipeper", "2 teentjes look", "olijfolie", "peterselie (takjes)",
+                          "3 dl Noilly Prat", "1 ei"])
+        self.assertEqual(R(["800 g gemengd gehakt", "Chilipeper 0,5", "1 teentje look", "1 ei"], "4 personen", 2),
+                         ["400 g gemengd gehakt", "0,25 chilipeper", "0,5 teentje look", "0,5 ei"])
+        self.assertEqual(R(["Ajuin 1", "Room 1 dl"], "2 personen", 4), ["2 ajuin", "2 dl room"])
+        view = selector.menu_view(self.db, self.start)
+        self.assertEqual(view["days"][0]["ingredients"], list(self.RECIPES["a"][2]))
+        from main import App
+        menus = App(self.db).menus(self.db.get_settings(), date(2026, 12, 1))
+        self.assertEqual(menus[0]["days"][1]["ingredients"][:3], ["2 ajuin", "2 teentjes look", "2 dl room"])
+        self.assertEqual(menus[0]["persons"], 4)
+        json.dumps(menus)
+
     def test_checks_persist_and_reset_with_new_menu(self):
         data, flat = self.items()
         key = flat["room"]["key"]
