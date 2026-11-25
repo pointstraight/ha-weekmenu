@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Weekmenu</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="static/app.css">
+</head>
+<body>
+<header class="top">
+  <h1>Weekmenu</h1>
+  <span id="job" class="pill" hidden></span>
+  <nav id="tabs" role="tablist">
+    <button role="tab" data-tab="menu" aria-selected="true">Menu</button>
+    <button role="tab" data-tab="settings" aria-selected="false">Instellingen</button>
+    <button role="tab" data-tab="catalog" aria-selected="false">Catalogus</button>
+    <button role="tab" data-tab="status" aria-selected="false">Status</button>
+  </nav>
+</header>
+<main>
+  <div id="toast" role="status" aria-live="polite" hidden></div>
+  <section id="tab-menu"></section>
+  <section id="tab-settings" hidden></section>
+  <section id="tab-catalog" hidden></section>
+  <section id="tab-status" hidden></section>
+</main>
+<script src="static/app.js"></script>
+</body>
+</html>
