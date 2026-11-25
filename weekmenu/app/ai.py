@@ -111,11 +111,14 @@ def tag_unsure(db, stop=None, batch=25, max_batches=40):
 
 
 CHOOSE_SYSTEM = (
-    "You plan a week of family dinners for a Flemish household from a shortlist of recipes. "
+    "You plan a week of ordinary family dinners for a Flemish household from a shortlist of recipes. "
     "Every listed recipe is already allowed on the day group it is listed under, so follow the hard rules "
-    "exactly and use your judgement only for variety: vary the main ingredient, the carbohydrate "
-    "(potato, pasta, rice, bread) and the cooking style across the week, avoid two similar dishes, "
-    "and prefer dishes that suit the season. Reply with JSON only: "
+    "exactly and use your judgement for the rest. Prefer everyday dishes a family would really cook on that "
+    "kind of day. Skip, whenever the rules leave you an alternative: dishes that do not fit the season of the "
+    "given month (no barbecue, cold soups or summer salads in winter; no heavy stews in summer), festive or "
+    "special-occasion dishes, and dishes whose name points to ingredients that are hard to find in an ordinary "
+    "supermarket. Vary the main ingredient, the carbohydrate (potato, pasta, rice, bread) and the cooking style "
+    "across the week and avoid two similar dishes. Reply with JSON only: "
     '{"days": [{"date": "YYYY-MM-DD", "id": <number>, "reason": "<max 12 words, in Dutch>"}]}'
 )
 

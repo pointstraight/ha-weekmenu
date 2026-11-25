@@ -62,7 +62,7 @@ function renderMenu() {
   }
   if (c.main) {
     html += `<div class="row spread" style="margin-bottom:12px">
-      <span class="muted">${S.next_run ? "Volgende automatische run: " + esc(S.next_run) : "Automatische run staat uit"}</span>
+      <span class="muted">${S.next_run ? "Volgende automatische run: " + esc(S.next_run) : "Automatische run staat uit"} · ${S.pool.pool} gerechten komen in aanmerking</span>
       <button class="btn primary" data-job="generate" ${busy ? "disabled" : ""}>Voorstel voor volgende periode</button></div>`;
   }
   if (c.main && !S.menus.length) html += `<div class="card"><p class="muted">Nog geen weekmenu. Maak een voorstel met de knop hierboven.</p></div>`;
@@ -128,6 +128,16 @@ function renderSettings() {
     <div class="field"><label for="nr">Niet herhalen binnen</label><div><input id="nr" type="number" name="no_repeat_weeks" min="0" max="104" value="${s.no_repeat_weeks}"> weken</div></div>
     <div class="field"><label for="ex">Nooit voorstellen</label><div><textarea id="ex" name="exclusions" placeholder="één woord per regel, bv. spruitjes">${esc(s.exclusions.join("\n"))}</textarea></div>
       <div class="hint">Een recept valt af als het woord in de naam of de ingrediënten staat.</div></div>
+    <div class="field"><label for="sf">Seizoensfilter</label><div><input id="sf" type="checkbox" name="season_filter" ${s.season_filter ? "checked" : ""}></div>
+      <div class="hint">Van oktober tot maart geen zomergerechten (barbecue, gazpacho…), van mei tot september geen wintergerechten (stoofpot, stamppot…). Nu uitgesloten: ${S.pool.season}.</div></div>
+    <div class="field"><label for="eo">Alleen alledaagse ingrediënten</label><div><input id="eo" type="checkbox" name="everyday_only" ${s.everyday_only ? "checked" : ""}></div>
+      <div class="hint">Geen gerechten met wild, orgaanvlees, kreeft, oesters, truffel en andere moeilijk te vinden ingrediënten. Nu uitgesloten: ${S.pool.rare}.</div></div>
+    <details style="padding:10px 0;border-top:1px solid var(--line)"><summary style="cursor:pointer;font-weight:600;min-height:32px">Woordenlijsten aanpassen</summary>
+      <p class="muted">Eén woord per regel. Een woord raakt ook het meervoud (oester raakt oesters, niet oesterzwam). Zet * achter een woord om samenstellingen te raken (kreeft* raakt kreeftensoep) of ervoor en erachter om het overal te raken (*truffel*).</p>
+      <div class="field"><label for="ww">Niet van oktober tot maart</label><div><textarea id="ww" name="winter_words">${esc(s.winter_words.join("\n"))}</textarea></div><div class="hint">Gezocht in de naam en de trefwoorden van het recept.</div></div>
+      <div class="field"><label for="sw">Niet van mei tot september</label><div><textarea id="sw" name="summer_words">${esc(s.summer_words.join("\n"))}</textarea></div></div>
+      <div class="field"><label for="rw2">Moeilijk te vinden</label><div><textarea id="rw2" name="rare_words" style="min-height:180px">${esc(s.rare_words.join("\n"))}</textarea></div><div class="hint">Gezocht in de naam en de ingrediënten.</div></div>
+    </details>
     <div class="field"><label for="ais">Slimme keuze met AI</label><div><input id="ais" type="checkbox" name="ai_selection" ${s.ai_selection ? "checked" : ""}></div>
       <div class="hint">${S.ai.available ? "Eén kleine AI-oproep per voorstel, voor variatie en seizoen. Uit: willekeurig binnen de regels, zonder AI." : "Geen API-sleutel ingesteld: de keuze gebeurt willekeurig binnen de regels."}</div></div>
     <div class="field"><label for="ait">AI voor onduidelijke recepten</label><div><input id="ait" type="checkbox" name="ai_tagging" ${s.ai_tagging ? "checked" : ""}></div>
@@ -145,7 +155,8 @@ function readSettings(form) {
   const f = new FormData(form), out = { mix: {} };
   for (const t of S.tags) out.mix[t] = { min: +f.get(`mix.${t}.min`), max: +f.get(`mix.${t}.max`) };
   for (const k of ["weekday_max_minutes", "weekend_max_minutes", "no_repeat_weeks", "run_weekday", "start_offset_days", "crawl_pause_seconds"]) out[k] = +f.get(k);
-  for (const k of ["strict_vegetarian", "ai_selection", "ai_tagging", "auto_run"]) out[k] = f.get(k) === "on";
+  for (const k of ["strict_vegetarian", "ai_selection", "ai_tagging", "auto_run", "season_filter", "everyday_only"]) out[k] = f.get(k) === "on";
+  for (const k of ["winter_words", "summer_words", "rare_words"]) out[k] = f.get(k);
   out.long_days = f.getAll("long_days").map(Number);
   out.unknown_time = f.get("unknown_time");
   out.run_time = f.get("run_time");

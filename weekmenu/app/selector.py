@@ -6,6 +6,7 @@ already satisfy them, and its answer is validated again before it is used.
 """
 import json
 import random
+import re
 from collections import Counter
 from datetime import date, datetime, timedelta
 
@@ -14,6 +15,46 @@ from db import TAGS, now_iso
 
 DAY_NAMES = ["maandag", "dinsdag", "woensdag", "donderdag", "vrijdag", "zaterdag", "zondag"]
 TAG_NL = {"fish": "vis", "vegetarian": "vegetarisch", "poultry": "gevogelte", "meat": "vlees", "other": "gemengd"}
+
+
+WINTER_MONTHS = {10, 11, 12, 1, 2, 3}
+SUMMER_MONTHS = {5, 6, 7, 8, 9}
+_ENDINGS = ["s", "en", "e", "n", "je", "jes", "tje", "tjes"]
+
+
+def word_regex(entries):
+    """Compile a word list. 'rog' matches the whole word plus plural/diminutive endings (rog, roggen), so not
+    'rogge' or 'roggebrood'; 'kreeft*' also matches longer words that start with it; '*truffel*' matches
+    anywhere in a word."""
+    parts = []
+    for entry in entries or []:
+        e = str(entry).strip().lower()
+        start, whole = r"\b", True
+        if e.startswith("*"):
+            e, start = e[1:], ""
+        if e.endswith("*"):
+            e, whole = e[:-1], False
+        if not e:
+            continue
+        end = ""
+        if whole:
+            endings = list(_ENDINGS)
+            if e[-1] in "bdfgklmnprst":          # doubled consonant: rog -> roggen, kip -> kippen
+                endings += [e[-1] + "en", e[-1] + "etje", e[-1] + "etjes"]
+            end = "(?:" + "|".join(endings) + r")?\b"
+        parts.append(start + re.escape(e) + end)
+    return re.compile("|".join(parts)) if parts else None
+
+
+def season_regex(settings, when):
+    """Words that are out of season in the month of `when`, or None."""
+    if not settings["season_filter"]:
+        return None
+    if when.month in WINTER_MONTHS:
+        return word_regex(settings["winter_words"])
+    if when.month in SUMMER_MONTHS:
+        return word_regex(settings["summer_words"])
+    return None
 
 
 def effective_tag(rec, settings):
@@ -38,27 +79,38 @@ def fits(rec, day, settings):
     return limit is None or rec["minutes"] <= limit
 
 
-def load_pool(db, settings, today, skip_urls=()):
-    """Recipes that may be proposed at all."""
+def load_pool(db, settings, today, skip_urls=(), when=None, stats=None):
+    """Recipes that may be proposed at all. `when` is the first day of the menu (decides the season)."""
     where = "status='ok' AND blocked=0 AND name IS NOT NULL AND (is_main=1"
     where += " OR is_main IS NULL)" if settings["allow_unknown_category"] else ")"
-    rows = db.q(f"SELECT url, name, minutes, tag, veg_strict, ingredients FROM recipes WHERE {where}")
+    rows = db.q(f"SELECT url, name, minutes, tag, veg_strict, ingredients, keywords FROM recipes WHERE {where}")
     recent = set()
     if settings["no_repeat_weeks"]:
         since = (today - timedelta(weeks=settings["no_repeat_weeks"])).isoformat()
         recent = {r["url"] for r in db.q("SELECT DISTINCT url FROM menu_items WHERE day >= ?", (since,))}
     skip = set(skip_urls) | recent
     words = [w for w in settings["exclusions"] if w]
+    season_rx = season_regex(settings, when or today)
+    rare_rx = word_regex(settings["rare_words"]) if settings["everyday_only"] else None
+    stats = stats if stats is not None else {}
+    stats.update(total=len(rows), excluded=0, season=0, rare=0, recent=0)
     pool = []
     for r in rows:
-        if r["url"] in skip:
-            continue
-        hay = (r["name"] + "\n" + " ".join(json.loads(r["ingredients"] or "[]"))).lower()
-        if any(w in hay for w in words):
-            continue
-        r["etag"] = effective_tag(r, settings)
-        del r["ingredients"]
-        pool.append(r)
+        name = r["name"].lower()
+        ings = " \n ".join(json.loads(r.pop("ingredients") or "[]")).lower()
+        keywords = " \n ".join(json.loads(r.pop("keywords") or "[]")).lower()
+        if any(w in name or w in ings for w in words):
+            stats["excluded"] += 1
+        elif season_rx and season_rx.search(name + " \n " + keywords):
+            stats["season"] += 1
+        elif rare_rx and rare_rx.search(name + " \n " + ings):
+            stats["rare"] += 1
+        elif r["url"] in skip:
+            stats["recent"] += 1
+        else:
+            r["etag"] = effective_tag(r, settings)
+            pool.append(r)
+    stats["pool"] = len(pool)
     return pool
 
 
@@ -140,7 +192,7 @@ def pick(pool, days, settings, rng, fixed=None, attempts=250):
     return best if best else ({}, ["geen recepten beschikbaar"])
 
 
-def _ai_plan(db, pool, days, settings, rng, per_group=7):
+def _ai_plan(db, pool, days, settings, rng, per_group=12):
     """Ask the model to choose from a rule-compliant shortlist. Returns {date: (recipe, reason)}."""
     groups = {"A": [d for d in days if d.weekday() not in settings["long_days"]],
               "B": [d for d in days if d.weekday() in settings["long_days"]]}
@@ -207,9 +259,9 @@ def generate(db, start=None, use_ai=None, seed=None, today=None):
     previous = [r["url"] for r in db.q("SELECT url FROM menu_items WHERE start=?", (start.isoformat(),))]
     db.x("DELETE FROM menu_items WHERE start=?", (start.isoformat(),))
     db.x("DELETE FROM menus WHERE start=?", (start.isoformat(),))
-    pool = load_pool(db, settings, today, skip_urls=previous)
+    pool = load_pool(db, settings, today, skip_urls=previous, when=start)
     if len(pool) < 7 and previous:
-        pool = load_pool(db, settings, today)
+        pool = load_pool(db, settings, today, when=start)
     reasons, method = {}, "regels"
     want_ai = settings["ai_selection"] if use_ai is None else use_ai
     plan, problems = None, None
@@ -259,7 +311,7 @@ def replace_day(db, start, day, want_tag=None, seed=None, today=None):
     plan = _active_plan(db, start, settings)
     plan.pop(day, None)
     shown = [r["url"] for r in db.q("SELECT url FROM menu_items WHERE start=?", (start.isoformat(),))]
-    pool = load_pool(db, settings, today, skip_urls=shown)
+    pool = load_pool(db, settings, today, skip_urls=shown, when=start)
     if want_tag in TAGS:
         narrowed = [r for r in pool if r["etag"] == want_tag]
         pool = narrowed or pool

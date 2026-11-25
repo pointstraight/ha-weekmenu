@@ -25,6 +25,24 @@ DEFAULT_SETTINGS = {
     "unknown_time": "long_days",       # never | long_days | any
     "no_repeat_weeks": 8,
     "exclusions": [],                  # words; a recipe containing one is never proposed
+    # season filter: words matched in the recipe name and its keywords
+    "season_filter": True,
+    "winter_words": ["barbecue*", "bbq*", "gazpacho", "zomer*", "picknick*"],             # skipped Oct-Mar
+    "summer_words": ["stoofpot*", "hutsepot", "stamppot*", "winter*", "erwtensoep", "snert", "cassoulet",
+                     "choucroute", "zuurkool*", "hachee", "pot-au-feu", "kerst*"],          # skipped May-Sep
+    # everyday filter: words matched in the recipe name and its ingredients
+    "everyday_only": True,
+    "rare_words": [
+        "hert", "herten*", "ree", "reerug*", "reefilet*", "reebout*", "everzwijn*", "fazant*", "patrijs*", "kwartel", "kwartelei*",
+        "duif", "duiven*", "parelhoen*", "haas", "hazen*", "wildragout", "wildstoofpot", "struisvogel*", "kangoeroe*",
+        "paardenvlees", "paardenfilet", "*zwezerik*", "niertjes", "kalfsnier*", "hersenen", "kalfskop", "ossenstaart*",
+        "ossentong", "kalfstong", "rundstong", "mergpijp*", "pens", "ganzenlever*", "eendenlever*", "foie gras",
+        "rog", "rogvleugel*", "zeeduivel*", "tarbot*", "griet", "zeewolf*", "zeebarbeel*", "*kreeft*", "oester",
+        "langoustine*", "sint-jakobs*", "coquille*", "zeekat*", "paling*", "kaviaar", "zee-egel*", "wulk", "scheermes*",
+        "kokkel*", "vongole", "venusschelp*", "zeekraal", "lamsoor", "snoekbaars*", "steenbolk*", "poon",
+        "*truffel*", "schorseneer*", "schorseneren", "aardpeer*", "topinamboer*", "postelein", "raapstelen",
+        "kardoen*", "yuzu*", "tonkaboon*", "vadouvan", "kombu", "bottarga", "nduja", "guanciale",
+    ],
     "strict_vegetarian": False,        # True: stock, fish sauce, gelatine... break "vegetarian"
     "main_categories": ["hoofdgerecht"],
     "allow_unknown_category": False,
@@ -161,14 +179,15 @@ def validate_settings(new, current):
         out["long_days"] = sorted({_int(d, 0, 6, 0) for d in new["long_days"]})
     if new.get("unknown_time") in ("never", "long_days", "any"):
         out["unknown_time"] = new["unknown_time"]
-    for key in ("exclusions", "main_categories"):
+    for key in ("exclusions", "main_categories", "winter_words", "summer_words", "rare_words"):
         if key in new:
             val = new[key]
             if isinstance(val, str):
                 val = val.replace(",", "\n").split("\n")
             if isinstance(val, list):
-                out[key] = [str(v).strip().lower() for v in val if str(v).strip()][:200]
-    for key in ("strict_vegetarian", "allow_unknown_category", "auto_run", "ai_selection", "ai_tagging"):
+                out[key] = [str(v).strip().lower() for v in val if str(v).strip()][:300]
+    for key in ("strict_vegetarian", "allow_unknown_category", "auto_run", "ai_selection", "ai_tagging",
+                "season_filter", "everyday_only"):
         if key in new:
             out[key] = bool(new[key])
     if "run_time" in new:

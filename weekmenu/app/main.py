@@ -20,7 +20,7 @@ from crawler import BASE, Crawler
 from db import DB, TAGS, now_iso
 from recipe_parser import PARSER_VERSION
 
-VERSION = "0.1.0"
+VERSION = "0.1.1"
 PORT = int(os.environ.get("WEEKMENU_PORT", "8099"))
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 ALLOWED_CLIENTS = {"172.30.32.2", "127.0.0.1", "::1"}  # HA ingress proxy only
@@ -35,6 +35,7 @@ class App:
         self.job_lock = threading.Lock()
         self.stop = threading.Event()
         self.shutdown = threading.Event()
+        self._pool_cache = (None, None)
 
     # -- small key/value store next to the settings -------------------------
     def kv_get(self, key, default=None):
@@ -157,6 +158,17 @@ class App:
             except Exception as e:
                 print(f"[error] scheduler: {e}", flush=True)
 
+    def pool_stats(self, settings, today):
+        """How many main dishes each filter removes right now (cached until settings or catalogue change)."""
+        n = self.db.one("SELECT COUNT(*) AS n, MAX(fetched_at) AS f, SUM(blocked) AS b FROM recipes WHERE status='ok'")
+        m = self.db.one("SELECT COUNT(*) AS n, MAX(id) AS i FROM menu_items")
+        key = json.dumps([settings, n, m, today.isoformat()], sort_keys=True)
+        if self._pool_cache[0] != key:
+            stats = {}
+            selector.load_pool(self.db, settings, today, when=today + timedelta(days=1), stats=stats)
+            self._pool_cache = (key, stats)
+        return self._pool_cache[1]
+
     # -- data for the UI ----------------------------------------------------
     def state(self):
         db = self.db
@@ -185,6 +197,7 @@ class App:
             "catalog": {k: (v or 0) for k, v in c.items()} | {"by_tag": by_tag, "quick_by_tag": quick_by_tag,
                                                              "last_update": self.kv_get("last_update")},
             "menus": [m for m in (selector.menu_view(db, s, settings) for s in selector.current_menus(db, today)) if m],
+            "pool": self.pool_stats(settings, today),
             "selftest": self.kv_get("selftest"),
             "next_run": nxt.strftime("%Y-%m-%d %H:%M") if nxt else None,
             "log": db.q("SELECT ts, level, msg FROM log ORDER BY id DESC LIMIT 40"),

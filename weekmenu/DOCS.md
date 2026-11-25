@@ -27,7 +27,14 @@ Deze regels worden in code afgedwongen, ook als AI de keuze maakt:
 - maximumtijd op weekdagen (standaard 45 minuten), ruimer op de gekozen "ruime dagen";
 - de weekmix: minimum en maximum per type (vis, vegetarisch, gevogelte, vlees, gemengd);
 - woorden onder "Nooit voorstellen" en gerechten die je met "Nooit meer" blokkeerde;
+- het seizoensfilter: van oktober tot maart geen zomergerechten (barbecue, gazpacho…), van mei tot
+  september geen wintergerechten (stoofpot, stamppot…);
+- alleen alledaagse ingrediënten: geen wild, orgaanvlees, kreeft, oesters, truffel en dergelijke;
 - geen gerecht dat in de voorbije weken al voorgesteld werd.
+
+Beide filters kun je uitzetten, en de woordenlijsten pas je aan onder Instellingen → Woordenlijsten
+aanpassen. Een woord raakt ook het meervoud (`oester` raakt oesters, niet oesterzwam); `kreeft*` raakt ook
+samenstellingen en `*truffel*` raakt het woord overal.
 
 Kan een regel niet gehaald worden (te weinig recepten), dan staat dat bovenaan het voorstel.
 

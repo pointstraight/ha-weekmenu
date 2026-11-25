@@ -377,5 +377,95 @@ class AITests(unittest.TestCase):
         self.assertEqual(view["method"], "regels")
 
 
+class FilterTests(unittest.TestCase):
+    def setUp(self):
+        self.db = DB(os.path.join(tempfile.mkdtemp(), "f.db"))
+        rows = []
+        specials = {
+            0: ("Glazed chicken op de barbecue", ["4 kippenbouten"], [], "poultry"),
+            1: ("Gazpacho met garnalen", ["1 kg tomaten", "200 g garnalen"], [], "fish"),
+            2: ("Kip van de grill", ["1 kip"], ["Zomer", "BBQ"], "poultry"),
+            3: ("Stoofpotje van rog", ["800 g rogvleugel", "2 dl witte wijn"], [], "fish"),
+            4: ("Hertenragout met veenbessen", ["800 g hertenragout"], [], "meat"),
+            5: ("Pasta met truffel", ["400 g tagliatelle", "20 g zwarte truffel"], [], "vegetarian"),
+            6: ("Risotto met oesterzwammen", ["300 g rijst", "250 g oesterzwammen", "2 el oestersaus"], [], "vegetarian"),
+            7: ("Roggebrood met zalm", ["4 sneden roggebrood", "200 g zalm"], [], "fish"),
+            8: ("Winterse stoofpot met worst", ["4 worsten", "1 savooikool"], [], "meat"),
+            9: ("Kalfszwezerik met erwtjes", ["400 g kalfszwezerik"], [], "meat"),
+            10: ("Varkenshaasje met mosterd", ["2 varkenshaasjes"], [], "meat"),
+            11: ("Oesters met sjalot", ["12 oesters"], [], "fish"),
+        }
+        for i in range(120):
+            name, ings, kw, tag = specials.get(i, (f"Gewoon gerecht {i}", ["1 ui", "500 g aardappelen"], [],
+                                                 ["fish", "vegetarian", "poultry", "meat"][i % 4]))
+            rows.append((f"u{i}", f"s{i}", name, "Hoofdgerecht", 30, json.dumps(ings), json.dumps(kw), tag, "rules", 1, "ok", 1))
+        self.db.many("""INSERT INTO recipes(url, slug, name, category, minutes, ingredients, keywords, tag, tag_source,
+                        veg_strict, status, is_main) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""", rows)
+
+    def names(self, when, **changes):
+        if changes:
+            self.db.save_settings(changes)
+        stats = {}
+        pool = selector.load_pool(self.db, self.db.get_settings(), when, when=when, stats=stats)
+        return {r["name"] for r in pool}, stats
+
+    def test_word_matching(self):
+        rx = selector.word_regex(["rog", "oester", "kreeft*", "*truffel*", "hert", "herten*", "haas"])
+        hits = ["800 g rog", "2 roggen", "12 oesters", "kreeftensoep", "zwarte truffel", "truffelolie", "chocoladetruffels",
+                "1 hert", "hertenragout", "1 haas"]
+        misses = ["roggebrood", "oesterzwammen", "oestersaus", "rivierkreeft", "varkenshaasjes", "hertog jan", "grog"]
+        for text in hits:
+            self.assertTrue(rx.search(text), text)
+        for text in misses:
+            self.assertFalse(rx.search(text), text)
+        self.assertIsNone(selector.word_regex([]))
+        self.assertIsNone(selector.word_regex(["*", " "]))
+
+    def test_season_filter(self):
+        winter, stats = self.names(date(2026, 12, 1))
+        for gone in ("Glazed chicken op de barbecue", "Gazpacho met garnalen", "Kip van de grill"):
+            self.assertNotIn(gone, winter)
+        self.assertIn("Winterse stoofpot met worst", winter)
+        self.assertEqual(stats["season"], 3)
+        summer, _ = self.names(date(2027, 7, 1))
+        self.assertIn("Glazed chicken op de barbecue", summer)
+        self.assertNotIn("Winterse stoofpot met worst", summer)
+        april, stats = self.names(date(2027, 4, 15))
+        self.assertIn("Glazed chicken op de barbecue", april)
+        self.assertIn("Winterse stoofpot met worst", april)
+        self.assertEqual(stats["season"], 0)
+        off, _ = self.names(date(2026, 12, 1), season_filter=False)
+        self.assertIn("Glazed chicken op de barbecue", off)
+
+    def test_everyday_filter(self):
+        pool, stats = self.names(date(2027, 4, 15))
+        for gone in ("Stoofpotje van rog", "Hertenragout met veenbessen", "Pasta met truffel", "Kalfszwezerik met erwtjes",
+                     "Oesters met sjalot"):
+            self.assertNotIn(gone, pool)
+        for kept in ("Risotto met oesterzwammen", "Roggebrood met zalm", "Varkenshaasje met mosterd"):
+            self.assertIn(kept, pool)
+        self.assertEqual(stats["rare"], 5)
+        self.assertEqual(stats["pool"], 120 - 5)
+        off, _ = self.names(date(2027, 4, 15), everyday_only=False)
+        self.assertIn("Stoofpotje van rog", off)
+
+    def test_word_lists_are_editable(self):
+        pool, _ = self.names(date(2027, 4, 15), rare_words="varkenshaas*\nzalm", winter_words=["gewoon"])
+        self.assertNotIn("Varkenshaasje met mosterd", pool)
+        self.assertNotIn("Roggebrood met zalm", pool)
+        self.assertIn("Stoofpotje van rog", pool)          # the default list was replaced
+        saved = self.db.get_settings()
+        self.assertEqual(saved["rare_words"], ["varkenshaas*", "zalm"])
+        self.assertEqual(saved["winter_words"], ["gewoon"])
+
+    def test_generated_winter_menu_has_no_filtered_dishes(self):
+        today = date(2026, 11, 30)
+        for seed in range(10):
+            start = selector.generate(self.db, start=today + timedelta(days=1), seed=seed, today=today)
+            names = {d["name"] for d in selector.menu_view(self.db, start)["days"]}
+            for bad in ("barbecue", "Gazpacho", "grill", "rog", "Herten", "truffel", "zwezerik", "Oesters"):
+                self.assertFalse(any(bad in n and "Roggebrood" not in n for n in names), (bad, names))
+
+
 if __name__ == "__main__":
     unittest.main()
