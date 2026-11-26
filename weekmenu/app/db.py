@@ -103,6 +103,9 @@ class DB:
         with self.lock:
             self.conn.execute("PRAGMA journal_mode=WAL")
             self.conn.executescript(SCHEMA)
+            columns = {r[1] for r in self.conn.execute("PRAGMA table_info(recipes)")}
+            if "description" not in columns:          # added in 0.4.0
+                self.conn.execute("ALTER TABLE recipes ADD COLUMN description TEXT")
             self.conn.commit()
 
     # -- generic helpers ---------------------------------------------------

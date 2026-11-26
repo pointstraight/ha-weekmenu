@@ -22,6 +22,29 @@ maakt een voorstel voor dinsdag tot en met maandag. Dag, uur en startdag stel je
 Onder elk gerecht staan de ingrediënten, omgerekend naar jouw aantal personen. Met **Verberg
 ingrediënten** klap je ze dicht.
 
+## Weergave voor het gezin
+
+Naast het beheer is er een rustige pagina om te tonen wat er op het menu staat: het gerecht van
+vandaag groot in beeld (foto, naam, bereidingstijd, één zin uitleg) en daaronder de volgende dagen.
+Tik op een andere dag om die te bekijken; na een minuut springt de pagina terug naar vandaag.
+De pagina is alleen-lezen: er kan niets mee gewijzigd worden en ze toont geen instellingen.
+
+- In de app: de link **Weergave voor het gezin** bovenaan.
+- Op een dashboard: voeg een kaart **Webpagina** toe met het adres van Home Assistant en poort 8100:
+
+```yaml
+type: iframe
+url: http://192.168.x.x:8100/
+aspect_ratio: 16:10
+```
+
+  Voor een tablet aan de muur werkt een aparte dashboardweergave van het type "Paneel" met alleen
+  deze kaart het best. Voeg `?theme=dark` of `?theme=light` toe aan het adres om het thema vast te
+  zetten; anders volgt de pagina het toestel.
+- Poort 8100 staat bij de app onder Configuratie → Netwerk. Ze is alleen binnen je thuisnetwerk
+  bereikbaar en je kunt ze daar uitschakelen. Open je Home Assistant via https, dan blokkeert de
+  browser een http-kaart; gebruik dan het lokale http-adres van Home Assistant.
+
 ## Regels
 
 Deze regels worden in code afgedwongen, ook als AI de keuze maakt:

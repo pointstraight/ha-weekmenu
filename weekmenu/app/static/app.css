@@ -95,3 +95,4 @@ progress { width: 100%; height: 10px; accent-color: var(--accent); }
 .days .ings .n { font-weight: 600; }
 .card a { color: var(--accent); text-underline-offset: 3px; }
 .days .dish a { color: var(--ink); }
+nav .navlink { margin-left: auto; padding: 10px 14px; min-height: 44px; display: inline-flex; align-items: center; color: var(--accent); font-weight: 600; white-space: nowrap; text-underline-offset: 4px; }

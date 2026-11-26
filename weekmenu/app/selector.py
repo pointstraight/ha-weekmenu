@@ -329,6 +329,23 @@ def replace_day(db, start, day, want_tag=None, seed=None, today=None):
     return new_plan[day]["name"]
 
 
+def brief(text, limit=150):
+    """First sentence or so of a recipe description, for the family display."""
+    text = re.sub(r"\s+", " ", text or "").strip()
+    if not text:
+        return ""
+    cut = ""
+    for sentence in re.split(r"(?<=[.!?])\s+", text):
+        if cut and len(cut) + len(sentence) + 1 > limit:
+            break
+        cut = (cut + " " + sentence).strip()
+        if len(cut) >= 60:
+            break
+    if len(cut) > limit:
+        cut = cut[:limit].rsplit(" ", 1)[0].rstrip(",;:") + "…"
+    return cut
+
+
 def menu_view(db, start, settings=None):
     """Menu as plain data for the UI and for Home Assistant."""
     settings = settings or db.get_settings()
@@ -336,7 +353,7 @@ def menu_view(db, start, settings=None):
     if not menu:
         return None
     rows = db.q("""SELECT m.day, m.reason, r.url, r.name, r.minutes, r.tag, r.veg_strict, r.image, r.tag_source,
-                          r.ingredients, r.yield
+                          r.ingredients, r.yield, r.description
                    FROM menu_items m JOIN recipes r ON r.url = m.url
                    WHERE m.start=? AND m.active=1 ORDER BY m.day""", (start.isoformat(),))
     by_day = {r["day"]: r for r in rows}
@@ -350,7 +367,7 @@ def menu_view(db, start, settings=None):
             tag = effective_tag(r, settings)
             entry.update(name=r["name"], url=r["url"], minutes=r["minutes"], tag=tag, tag_nl=TAG_NL[tag],
                          reason=r["reason"], image=r["image"], serves=r["yield"],
-                         ingredients=json.loads(r["ingredients"] or "[]"))
+                         ingredients=json.loads(r["ingredients"] or "[]"), brief=brief(r["description"]))
         days.append(entry)
     counts = Counter(d["tag"] for d in days if d.get("tag"))
     return {"start": start.isoformat(), "end": (start + timedelta(days=6)).isoformat(), "status": menu["status"],

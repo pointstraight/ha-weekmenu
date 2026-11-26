@@ -1,5 +1,5 @@
 name: "Weekmenu"
-version: "0.3.0"
+version: "0.4.0"
 slug: "weekmenu"
 description: "Wekelijks menuvoorstel uit Dagelijkse kost, met instelbare mix en tijdslimiet"
 url: "https://github.com/pointstraight/ha-weekmenu"
@@ -14,6 +14,10 @@ panel_icon: mdi:silverware-fork-knife
 panel_title: Weekmenu
 panel_admin: false
 homeassistant_api: true
+ports:
+  8100/tcp: 8100
+ports_description:
+  8100/tcp: "Weergave voor het gezin (alleen lezen)"
 options:
   ai_model: "claude-haiku-5-5"
 schema:

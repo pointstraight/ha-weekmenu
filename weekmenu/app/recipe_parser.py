@@ -170,7 +170,7 @@ def _meta(page, prop):
 def parse_recipe(page, url):
     """Structured recipe from a recipe page. Missing fields are None/[]."""
     rec = {"url": url, "slug": url.rstrip("/").rsplit("/", 1)[-1], "name": None, "category": None,
-           "minutes": None, "yield": None, "ingredients": [], "keywords": [], "image": None}
+           "minutes": None, "yield": None, "ingredients": [], "keywords": [], "image": None, "description": None}
     src = {}
     data, where = find_recipe_data(page)
     if data:
@@ -183,6 +183,7 @@ def parse_recipe(page, url):
         elif parts:
             rec["minutes"], src["minutes"] = parts, f"{where}:prepTime+cookTime"
         rec["yield"] = _text(data.get("recipeYield"))
+        rec["description"] = _text(data.get("description"))
         rec["ingredients"] = _list(data.get("recipeIngredient") or data.get("ingredients"))
         rec["keywords"] = _list(data.get("keywords"))
         img = data.get("image")
@@ -232,5 +233,9 @@ def parse_recipe(page, url):
         rec["image"] = _meta(page, "og:image")
         if rec["image"]:
             src["image"] = "og:image"
+    if not rec["description"]:
+        rec["description"] = _meta(page, "og:description") or _meta(page, "description")
+    if rec["description"]:
+        rec["description"] = re.sub(r"\s+", " ", _strip_tags(rec["description"])).strip()[:1200] or None
     rec["sources"] = src
     return rec

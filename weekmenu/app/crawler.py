@@ -140,9 +140,9 @@ class Crawler:
         current = self.db.one("SELECT tag_source FROM recipes WHERE url=?", (url,)) or {}
         tag = tag_recipe(rec["name"], rec["ingredients"])
         self.db.x("""UPDATE recipes SET name=?, category=?, minutes=?, yield=?, ingredients=?, keywords=?, image=?,
-                     status='ok', is_main=?, sources=?, parser_version=?, fetched_at=?, error=NULL WHERE url=?""",
+                     description=?, status='ok', is_main=?, sources=?, parser_version=?, fetched_at=?, error=NULL WHERE url=?""",
                   (rec["name"], rec["category"], rec["minutes"], rec["yield"], json.dumps(rec["ingredients"], ensure_ascii=False),
-                   json.dumps(rec["keywords"], ensure_ascii=False), rec["image"], is_main,
+                   json.dumps(rec["keywords"], ensure_ascii=False), rec["image"], rec["description"] or "", is_main,
                    json.dumps(rec["sources"]), PARSER_VERSION, ts, url))
         if current.get("tag_source") not in ("manual", "ai"):
             self.db.x("UPDATE recipes SET tag=?, tag_source=?, veg_strict=?, tag_why=? WHERE url=?",
@@ -152,6 +152,18 @@ class Crawler:
                 "minutes": rec["minutes"], "ingredients": len(rec["ingredients"]), "is_main": is_main,
                 "tag": tag["tag"], "tag_confidence": tag["confidence"], "tag_why": tag["why"],
                 "sources": rec["sources"]}
+
+    def enrich(self, url):
+        """Fetch the description (and a missing photo) of one recipe that was crawled before 0.4.0."""
+        text, image = "", None
+        try:
+            if self.allowed(url):
+                rec = parse_recipe(self._get(url, tries=1), url)
+                text, image = rec["description"] or "", rec["image"]
+        except Exception:
+            pass                                   # stays empty; the display simply shows no description
+        self.db.x("UPDATE recipes SET description=?, image=COALESCE(image, ?) WHERE url=?", (text, image, url))
+        return bool(text)
 
     def pending(self):
         """URLs to fetch: new ones, plus failed ones when the parser changed or after two weeks."""

@@ -33,6 +33,9 @@ Run against the real site outside Home Assistant:
 
 ## Credits
 
+The family display bundles the typefaces Fraunces and Figtree (SIL Open Font License 1.1, see
+`weekmenu/app/static/fonts/LICENSE.txt`).
+
 The Collect&Go connection (endpoints, headers and request shapes) follows the findings of
 [oelegeirnaert/ha-collect-and-go](https://github.com/oelegeirnaert/ha-collect-and-go) (MIT licence).
 Collect&Go has no public API; this is unofficial, not affiliated with Colruyt Group, and never checks out.

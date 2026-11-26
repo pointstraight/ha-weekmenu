@@ -22,8 +22,9 @@ from crawler import BASE, Crawler
 from db import DB, TAGS, now_iso
 from recipe_parser import PARSER_VERSION
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 PORT = int(os.environ.get("WEEKMENU_PORT", "8099"))
+DISPLAY_PORT = int(os.environ.get("WEEKMENU_DISPLAY_PORT", "8100"))   # read-only family display
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 ALLOWED_CLIENTS = {"172.30.32.2", "127.0.0.1", "::1"}  # HA ingress proxy only
 DEV = bool(os.environ.get("WEEKMENU_DEV"))
@@ -171,6 +172,7 @@ class App:
             try:
                 self.scheduler_tick()
                 self.colruyt_daily_check()
+                self.enrich_menus()
                 if time.monotonic() - last_publish > 300:
                     ha.publish(self.db, self.job)
                     last_publish = time.monotonic()
@@ -237,6 +239,35 @@ class App:
                 out.append(view)
         return out
 
+    def display(self, manage=False):
+        """Read-only data for the family display: today's dish and the days that follow."""
+        settings = self.db.get_settings()
+        today = selector.local_today(settings)
+        by_date = {}
+        for start in selector.current_menus(self.db, today):
+            view = selector.menu_view(self.db, start, settings)
+            for d in (view or {}).get("days", []):
+                if d.get("name") and d["date"] >= today.isoformat():
+                    by_date.setdefault(d["date"], {
+                        "date": d["date"], "weekday": d["weekday"], "name": d["name"], "minutes": d["minutes"],
+                        "type": d["tag_nl"], "image": d["image"], "url": d["url"],
+                        "brief": d["brief"] or (d["reason"] if d["reason"] != "vervangen" else "")})
+        days = [by_date[k] for k in sorted(by_date)]
+        return {"today": today.isoformat(), "weekday": selector.DAY_NAMES[today.weekday()],
+                "dish": next((d for d in days if d["date"] == today.isoformat()), None),
+                "upcoming": [d for d in days if d["date"] > today.isoformat()][:6], "manage": manage}
+
+    def enrich_menus(self, limit=3):
+        """Fetch descriptions for dishes on current menus that do not have one yet (a few per call)."""
+        if self.job["running"]:
+            return 0
+        today = selector.local_today(self.db.get_settings()).isoformat()
+        rows = self.db.q("""SELECT DISTINCT r.url FROM menu_items m JOIN recipes r ON r.url = m.url
+                            WHERE m.active=1 AND r.description IS NULL AND m.day >= ? LIMIT ?""", (today, limit))
+        for row in rows:
+            self.crawler.enrich(row["url"])
+        return len(rows)
+
     def recipes(self, q="", tag="", scope="main"):
         where, args = ["status='ok'"], []
         if scope == "main":
@@ -291,6 +322,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._file("index.html")
             if path.startswith("/static/"):
                 return self._file(path[len("/static/"):])
+            if path == "/display":
+                return self._file("display.html")
+            if path == "/api/display":
+                return self._send(200, self.app.display(manage=True))
             if path == "/api/state":
                 return self._send(200, self.app.state())
             if path == "/api/recipes":
@@ -388,6 +423,30 @@ class Handler(BaseHTTPRequestHandler):
             self._send(500, {"error": f"{type(e).__name__}: {e}"})
 
 
+class DisplayHandler(Handler):
+    """Second, read-only server for the family display. Serves the page, its fonts and one JSON
+    document; nothing here can change anything and no settings or account data are exposed."""
+
+    def _allowed(self):
+        return True
+
+    def do_GET(self):
+        path, _ = self._path()
+        try:
+            if path in ("/", "/display"):
+                return self._file("display.html")
+            if path.startswith("/static/fonts/"):
+                return self._file(path[len("/static/"):])
+            if path == "/api/display":
+                return self._send(200, self.app.display(manage=False))
+            self._send(404, {"error": "niet gevonden"})
+        except Exception as e:
+            self._send(500, {"error": f"{type(e).__name__}: {e}"})
+
+    def do_POST(self):
+        self._send(405, {"error": "alleen lezen"})
+
+
 def main():
     app = App()
     Handler.app = app
@@ -401,6 +460,12 @@ def main():
 
     signal.signal(signal.SIGTERM, bye)
     signal.signal(signal.SIGINT, bye)
+    try:
+        display = ThreadingHTTPServer(("0.0.0.0", DISPLAY_PORT), DisplayHandler)
+        display.daemon_threads = True
+        threading.Thread(target=display.serve_forever, daemon=True).start()
+    except OSError as e:
+        app.db.log(f"Weergave op poort {DISPLAY_PORT} niet gestart: {e}", "warning")
     threading.Thread(target=app.scheduler_loop, daemon=True).start()
     app.db.log(f"Weekmenu {VERSION} gestart op poort {PORT}; AI {'beschikbaar' if ai.available() else 'niet ingesteld'}")
     ha.publish(app.db, app.job)

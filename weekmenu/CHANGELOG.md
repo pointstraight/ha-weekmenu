@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.0
+- Nieuwe weergave voor het gezin: het gerecht van vandaag groot in beeld, met de volgende dagen eronder. Alleen lezen, bedoeld voor een dashboard of tablet.
+- Bereikbaar via de knop "Weergave voor het gezin" en rechtstreeks op poort 8100 (voor een webpagina-kaart in Home Assistant).
+- Bij gerechten op het menu wordt de korte beschrijving van het recept opgehaald.
+
 ## 0.3.0
 - Nieuw tabblad Colruyt: verbind de app met je Collect&Go-account (sessie plakken, geen wachtwoord), met status en tests voor lezen, zoeken en toevoegen/verwijderen.
 - Dagelijkse controle van de sessie; `sensor.weekmenu_status` toont of de koppeling verbonden of verlopen is.

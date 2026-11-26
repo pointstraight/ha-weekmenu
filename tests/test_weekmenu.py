@@ -36,8 +36,10 @@ for i in range(180):
 
 def recipe_page(slug):
     r = SITE[slug]
+    about = f"{r['name']} is een stevige klassieker. Jeroen maakt hem met verse groenten en een scheutje room. Lekker voor het hele gezin."
     data = {"@context": "https://schema.org", "@type": "Recipe", "name": r["name"], "recipeCategory": r["cat"],
-            "recipeIngredient": r["ings"], "recipeYield": "4 personen"}
+            "recipeIngredient": r["ings"], "recipeYield": "4 personen", "description": about,
+            "image": [os.environ.get("WEEKMENU_BASE", "") + f"/img/{sum(map(ord, slug)) % 6}.jpg"]}
     if r["minutes"]:
         data["totalTime"] = f"PT{r['minutes'] // 60}H{r['minutes'] % 60}M" if r["minutes"] >= 60 else f"PT{r['minutes']}M"
     if r["style"] == 0:      # JSON-LD script tag
@@ -47,9 +49,13 @@ def recipe_page(slug):
         return f'<html><body><script>self.__next_f.push([1,{chunk}])</script></body></html>'
     # visible page only (no ingredients available this way)
     t = "" if not r["minutes"] else (f"{r['minutes'] // 60}u {r['minutes'] % 60}m" if r["minutes"] >= 60 else f"{r['minutes']}m")
-    return (f'<html><head><meta property="og:title" content="{r["name"]} | Dagelijkse kost"/></head><body>'
+    return (f'<html><head><meta property="og:title" content="{r["name"]} | Dagelijkse kost"/>'
+            f'<meta property="og:description" content="{about}"/></head><body>'
             f'<h1>{r["name"]}</h1><div><span>Totale tijd</span><span>{t}</span></div>'
             f'<div><span>Type gerecht</span><a href="/gerechten/zoeken?type=x">{r["cat"]}</a></div></body></html>')
+
+
+PLACEHOLDERS = {}       # filled by dev_server.py with stand-in dish photos
 
 
 class FakeSite(BaseHTTPRequestHandler):
@@ -64,6 +70,14 @@ class FakeSite(BaseHTTPRequestHandler):
             body = "<html><body>" + "".join(f'<a href="/gerechten/{s}">{SITE[s]["name"]}</a>' for s in SITE) + \
                    '<a href="/gerechten/zoeken?sort=newest">recent</a></body></html>'
             code = 200
+        elif path.startswith("/img/"):
+            raw = PLACEHOLDERS.get(path.rsplit("/", 1)[-1], b"")
+            self.send_response(200 if raw else 404)
+            self.send_header("Content-Type", "image/jpeg")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+            return
         elif path.startswith("/gerechten/") and path.rsplit("/", 1)[-1] in SITE:
             body, code = recipe_page(path.rsplit("/", 1)[-1]), 200
         else:
@@ -767,6 +781,92 @@ class ColruytTests(unittest.TestCase):
         self.assertFalse(app.colruyt_daily_check(day.replace(hour=18)))
         self.assertEqual(len(MockCollectAndGo.seen), before + 1)
         self.assertTrue(app.colruyt_daily_check(day + timedelta(days=1)))
+
+
+class DisplayTests(unittest.TestCase):
+    def setUp(self):
+        from main import App
+        self.app = App(DB(os.path.join(tempfile.mkdtemp(), "d.db")))
+        self.db = self.app.db
+        self.today = selector.local_today(self.db.get_settings())
+        start = self.today - timedelta(days=2)
+        self.db.x("INSERT INTO menus(start, created_at, status, method, notes) VALUES(?,?,?,?,?)", (start.isoformat(), "x", "approved", "regels", "[]"))
+        nxt = start + timedelta(days=7)
+        self.db.x("INSERT INTO menus(start, created_at, status, method, notes) VALUES(?,?,?,?,?)", (nxt.isoformat(), "x", "proposed", "regels", "[]"))
+        for i in range(14):
+            url = os.environ["WEEKMENU_BASE"] + f"/gerechten/gerecht-{i * 3}"          # JSON-LD style pages of the fake site
+            self.db.x("""INSERT INTO recipes(url, slug, name, category, minutes, yield, ingredients, tag, status, is_main, image, description)
+                         VALUES(?,?,?,?,?,?,?,?,?,1,?,?)""",
+                      (url, f"gerecht-{i * 3}", f"Gerecht {i}", "Hoofdgerecht", 30 + i, "4", "[]", "fish", "ok", "http://x/img.jpg",
+                       None if i % 2 else "Een korte zin. En nog een tweede, veel langere zin die er niet meer bij hoeft."))
+            m = start if i < 7 else nxt
+            self.db.x("INSERT INTO menu_items(start, day, url, reason, active, created_at) VALUES(?,?,?,?,1,?)",
+                      (m.isoformat(), (start + timedelta(days=i)).isoformat(), url, "past bij het seizoen" if i == 3 else "", "x"))
+
+    def test_today_first_then_the_days_that_follow(self):
+        d = self.app.display()
+        self.assertEqual(d["today"], self.today.isoformat())
+        self.assertEqual(d["dish"]["name"], "Gerecht 2")
+        self.assertEqual(d["dish"]["brief"], "Een korte zin. En nog een tweede, veel langere zin die er niet meer bij hoeft.")
+        self.assertEqual([x["name"] for x in d["upcoming"]], [f"Gerecht {i}" for i in range(3, 9)])     # runs on into next week's menu
+        self.assertEqual(d["upcoming"][0]["brief"], "past bij het seizoen")                               # no description: the AI reason
+        self.assertFalse(d["manage"])
+        self.assertNotIn("ingredients", d["dish"])
+        self.assertEqual(set(d["dish"]), {"date", "weekday", "name", "minutes", "type", "image", "url", "brief"})
+
+    def test_brief(self):
+        self.assertEqual(selector.brief(""), "")
+        self.assertEqual(selector.brief("Kort."), "Kort.")
+        long = "Dit is een heel lange zin zonder einde " * 8
+        out = selector.brief(long)
+        self.assertLessEqual(len(out), 151)
+        self.assertTrue(out.endswith("…"))
+
+    def test_missing_descriptions_are_fetched_for_menu_dishes_only(self):
+        before = self.db.one("SELECT COUNT(*) AS n FROM recipes WHERE description IS NULL")["n"]
+        self.assertEqual(before, 7)
+        for _ in range(4):
+            self.app.enrich_menus()
+        rows = self.db.q("SELECT name, description FROM recipes WHERE name IN ('Gerecht 3', 'Gerecht 1')")
+        by = {r["name"]: r["description"] for r in rows}
+        self.assertIn("stevige klassieker", by["Gerecht 3"])          # on a running menu: fetched
+        self.assertIsNone(by["Gerecht 1"])                            # already eaten: not worth a request
+        self.assertEqual(self.app.enrich_menus(), 0)
+
+    def test_display_server_is_read_only(self):
+        import urllib.request
+        from main import DisplayHandler, Handler
+        Handler.app = self.app
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), DisplayHandler)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        base = f"http://127.0.0.1:{srv.server_address[1]}"
+        try:
+            page = urllib.request.urlopen(base + "/").read().decode()
+            self.assertIn("api/display", page)
+            data = json.loads(urllib.request.urlopen(base + "/api/display").read())
+            self.assertEqual(data["dish"]["name"], "Gerecht 2")
+            self.assertEqual(urllib.request.urlopen(base + "/static/fonts/fraunces.woff2").status, 200)
+            for path in ("/api/state", "/api/recipes", "/static/app.js", "/static/../main.py", "/index.html"):
+                with self.assertRaises(urllib.error.HTTPError) as ctx:
+                    urllib.request.urlopen(base + path)
+                self.assertEqual(ctx.exception.code, 404, path)
+            req = urllib.request.Request(base + "/api/settings", data=b"{}", method="POST")
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                urllib.request.urlopen(req)
+            self.assertEqual(ctx.exception.code, 405)
+        finally:
+            srv.shutdown()
+
+    def test_old_database_gets_the_new_column(self):
+        import sqlite3
+        path = os.path.join(tempfile.mkdtemp(), "old.db")
+        con = sqlite3.connect(path)
+        con.execute("CREATE TABLE recipes(url TEXT PRIMARY KEY, name TEXT, status TEXT NOT NULL DEFAULT 'new')")
+        con.execute("INSERT INTO recipes(url, name, status) VALUES('u', 'Oud recept', 'ok')")
+        con.commit()
+        con.close()
+        db = DB(path)
+        self.assertEqual(db.one("SELECT name, description FROM recipes"), {"name": "Oud recept", "description": None})
 
 
 if __name__ == "__main__":
