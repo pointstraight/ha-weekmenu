@@ -42,6 +42,23 @@ class ColruytError(Exception):
     """Something went wrong talking to Collect&Go (message is Dutch, for the UI)."""
 
 
+def _error_text(http_error):
+    """The shop's own error key/message from a refused request, shortened; never contains our cookies."""
+    try:
+        body = http_error.read(2000).decode("utf-8", "replace")
+    except Exception:
+        return ""
+    try:
+        data = json.loads(body)
+        errors = data.get("errors") if isinstance(data, dict) else None
+        if isinstance(errors, list) and errors and isinstance(errors[0], dict):
+            parts = [str(errors[0].get(k) or "") for k in ("errorKey", "errorMessage")]
+            return " ".join(x for x in parts if x)[:240]
+    except ValueError:
+        pass
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", body)).strip()[:160]
+
+
 class NotConnected(ColruytError):
     pass
 
@@ -157,7 +174,10 @@ class Client:
                 raise SessionExpired("Collect&Go weigert de sessie: log opnieuw in en verbind opnieuw.") from None
             if e.code in (405, 429, 456):
                 raise RateLimited(f"Collect&Go vraagt om te vertragen (HTTP {e.code}). Probeer het over enkele minuten opnieuw.") from None
-            raise ColruytError(f"Onverwacht antwoord van Collect&Go (HTTP {e.code}).") from None
+            reason = _error_text(e)
+            err = ColruytError(f"Collect&Go weigert dit verzoek (HTTP {e.code})" + (f": {reason}" if reason else "."))
+            err.status, err.reason = e.code, reason
+            raise err from None
         except (urllib.error.URLError, TimeoutError, OSError) as e:
             raise ColruytError(f"Collect&Go niet bereikbaar: {e}") from None
         if not text.strip():
@@ -169,9 +189,21 @@ class Client:
 
     # -- products -------------------------------------------------------------
     def search(self, term, size=12):
-        data = self._call("GET", f"{SEARCH}/productview/bySearchTerm/{urllib.parse.quote(term, safe='')}",
-                          {"langId": LANG_ID, "catalogId": CATALOG_ID, "pageSize": size})
-        return [_product(p) for p in (data.get("catalogEntryView") or []) if isinstance(p, dict)]
+        url = f"{SEARCH}/productview/bySearchTerm/{urllib.parse.quote(term, safe='')}"
+        found, self.search_catalog = [], self.catalog
+        if self.catalog != CATALOG_ID:
+            try:
+                data = self._call("GET", url, {"langId": LANG_ID, "catalogId": self.catalog, "pageSize": size})
+                found = [p for p in (data.get("catalogEntryView") or []) if isinstance(p, dict)]
+            except (SessionExpired, RateLimited):
+                raise
+            except ColruytError:
+                found = []
+        if not found:
+            self.search_catalog = CATALOG_ID
+            data = self._call("GET", url, {"langId": LANG_ID, "catalogId": CATALOG_ID, "pageSize": size})
+            found = [p for p in (data.get("catalogEntryView") or []) if isinstance(p, dict)]
+        return [_product(p) for p in found]
 
     # -- cart -----------------------------------------------------------------
     def cart(self):
@@ -250,7 +282,10 @@ def _product(p):
             value = _num(entry.get("value") or entry.get("price") or entry.get("basePrice"))
             if value is not None and (price is None or entry.get("usage") == "Display"):
                 price = value
-    return {"entry_id": str(p.get("uniqueID") or ""), "part_number": str(p.get("partNumber") or ""),
+    hints = {k: v for k, v in p.items() if isinstance(v, (str, int, float, bool)) and len(str(v)) < 60
+             and re.search(r"unit|weight|quant|sell|order|pack|content|buyable|variable|type", k, re.I)}
+    return {"fields": sorted(p), "hints": hints,
+            "entry_id": str(p.get("uniqueID") or ""), "part_number": str(p.get("partNumber") or ""),
             "name": str(p.get("name") or p.get("shortDescription") or ""),
             "brand": str(p.get("manufacturer") or p.get("brand") or ""),
             "content": str(p.get("content") or p.get("packaging") or ""), "price": price,
@@ -330,19 +365,37 @@ def test(db, mode, query="melk"):
             before = c.cart()
             state["before"] = before
             debug["lines_before"] = len(before["items"])
-            for p in c.search("citroen", 12):
-                if p["available"] and p["entry_id"] and not any(_same_product(i, p) for i in before["items"]):
-                    state["product"] = p
-                    debug["product"] = {"entry_id": p["entry_id"], "part_number": p["part_number"]}
-                    return " ".join(x for x in (p["name"], f"({p['content']})" if p["content"] else "") if x)
-            raise ColruytError("geen geschikt testproduct gevonden")
+            found = [p for p in c.search("citroen", 12)
+                     if p["available"] and p["entry_id"] and not any(_same_product(i, p) for i in before["items"])]
+            debug["search_catalog"] = getattr(c, "search_catalog", None)
+            # packaged products ("500g", "1 L", "4 st") first: loose items sold by weight may need another order unit
+            found.sort(key=lambda p: 0 if re.search(r"\d\s*(?:g|kg|ml|cl|l|st)\b", (p["name"] + " " + p["content"]).lower()) else 1)
+            state["candidates"] = found[:4]
+            if not found:
+                raise ColruytError("geen geschikt testproduct gevonden")
+            if found[0]["fields"]:
+                debug["product_fields"] = found[0]["fields"]
+            return f"{len(found)} kandidaten, eerste: {found[0]['name']}"
 
         def add():
-            response = c.add(state["product"]["entry_id"], 1)
-            state["added"] = _added_ids(response)
-            debug["add_response_fields"] = sorted(response) if isinstance(response, dict) else str(type(response))
-            debug["add_returned_line_id"] = bool(state["added"])
-            return "verzoek aanvaard door Collect&Go"
+            debug["attempts"] = []
+            for p in state["candidates"]:
+                attempt = {"name": p["name"], "entry_id": p["entry_id"], "part_number": p["part_number"], "hints": p["hints"]}
+                debug["attempts"].append(attempt)
+                try:
+                    response = c.add(p["entry_id"], 1)
+                except ColruytError as e:
+                    attempt["result"] = str(e)
+                    if getattr(e, "status", None) == 400:      # this product is refused: try another one
+                        continue
+                    raise
+                attempt["result"] = "aanvaard"
+                state["product"] = p
+                state["added"] = _added_ids(response)
+                debug["add_response_fields"] = sorted(response) if isinstance(response, dict) else str(type(response))
+                debug["add_returned_line_id"] = bool(state["added"])
+                return f"{p['name']}: verzoek aanvaard door Collect&Go"
+            raise ColruytError(f"Collect&Go weigerde alle {len(state['candidates'])} testproducten; zie de technische details")
 
         def locate():
             """Our line in the cart: (line, grew) or (None, False)."""

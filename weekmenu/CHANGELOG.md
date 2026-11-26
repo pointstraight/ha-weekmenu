@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.3
+- Collect&Go: zoekt eerst in het assortiment van je eigen winkel.
+- Collect&Go-test: probeert een ander testproduct wanneer Collect&Go er een weigert, en toont de reden die Collect&Go zelf geeft.
+
 ## 0.4.2
 - De app heet in de zijbalk nu "Weekmenu beheer" (eigen icoon), zodat ze niet verward wordt met een dashboard "Weekmenu" voor het gezin.
 - Handleiding: dashboard met de gezinsweergave op volledige hoogte.

@@ -635,6 +635,8 @@ class MockCollectAndGo(BaseHTTPRequestHandler):
     cart = []
     seen = []
     mode = "ok"          # ok | throttle_cart | throttle_all
+    refuse = set()               # product ids the shop refuses to add (HTTP 400 with its own error text)
+    store_search = "ok"          # ok | empty | error: how a search in the store's own catalogue behaves
     answer_with_id = True        # the real shop answers a cart POST with the new orderItemId
     line_shape = "real"          # real: line carries its own article number, not the product's uniqueID
     TOKEN = "1234567%2CsecretTOKENvalue"
@@ -650,7 +652,7 @@ class MockCollectAndGo(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _handle(self, method):
+    def _handle(self, method):   # noqa: C901
         from urllib.parse import parse_qs, unquote, urlparse
         u = urlparse(self.path)
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
@@ -666,6 +668,8 @@ class MockCollectAndGo(BaseHTTPRequestHandler):
             return self._reply(456)
         if "/productview/bySearchTerm/" in u.path:
             term = unquote(u.path.rsplit("/", 1)[-1])
+            if q.get("catalogId") == "10646" and self.store_search != "ok":
+                return self._reply(200, {"catalogEntryView": []}) if self.store_search == "empty" else self._reply(400, {"errors": [{"errorKey": "_ERR_CATALOG"}]})
             return self._reply(200, {"catalogEntryView": [
                 {"uniqueID": f"{9000 + i}", "partNumber": f"{500 + i}-P", "name": f"{term.capitalize()} {i}", "manufacturer": "Boni",
                  "content": "1 st", "buyable": True, "price": [{"usage": "Offer", "value": "9.99"}, {"usage": "Display", "value": f"{1 + i}.29"}]}
@@ -679,6 +683,8 @@ class MockCollectAndGo(BaseHTTPRequestHandler):
             item = body["orderItem"][0]
             if item["xitem_field2"] != f"P|{item['quantity']}|st":
                 return self._reply(400)
+            if item["productId"] in self.refuse:
+                return self._reply(400, {"errors": [{"errorKey": "_ERR_PROD_NOT_ORDERABLE", "errorMessage": "Dit product kan niet besteld worden."}]})
             existing = next((i for i in self.cart if i.get("_product") == item["productId"]), None)
             if existing:                                  # same product again: the shop raises the quantity of that line
                 existing["quantity"] = str(int(existing["quantity"]) + int(item["quantity"]))
@@ -729,6 +735,7 @@ class ColruytTests(unittest.TestCase):
         colruyt.CART, colruyt.SEARCH, colruyt.ORDERS = base + "/cartsvc/store/90004", base + "/searchsvc/store/90004", base + "/ordersvc/store/90004"
         MockCollectAndGo.cart, MockCollectAndGo.seen, MockCollectAndGo.mode = [], [], "ok"
         MockCollectAndGo.answer_with_id, MockCollectAndGo.line_shape = True, "real"
+        MockCollectAndGo.refuse, MockCollectAndGo.store_search = set(), "ok"
         self.db = DB(os.path.join(tempfile.mkdtemp(), "c.db"))
 
     def tearDown(self):
@@ -797,6 +804,30 @@ class ColruytTests(unittest.TestCase):
             self.assertEqual([s["ok"] for s in result["steps"]], [True, True, True, True], result)
             self.assertEqual(result["steps"][-1]["detail"], "aantal weer teruggezet")
             self.assertEqual([(i["orderItemId"], i["quantity"]) for i in MockCollectAndGo.cart], [("OLD", "1")])
+
+    def test_write_test_moves_on_when_the_shop_refuses_a_product(self):
+        self.c.connect(self.db, self.GOOD)
+        MockCollectAndGo.refuse = {"9000", "9001"}
+        result = self.c.test(self.db, "write")
+        self.assertEqual([s["ok"] for s in result["steps"]], [True, True, True, True], result)
+        attempts = result["debug"]["attempts"]
+        self.assertEqual([a["entry_id"] for a in attempts], ["9000", "9001", "9002"])
+        self.assertIn("_ERR_PROD_NOT_ORDERABLE Dit product kan niet besteld worden.", attempts[0]["result"])
+        self.assertEqual(attempts[2]["result"], "aanvaard")
+        self.assertEqual(MockCollectAndGo.cart, [])
+        MockCollectAndGo.refuse = {"9000", "9001", "9002", "9003"}                       # everything refused: clear failure, nothing left behind
+        result = self.c.test(self.db, "write")
+        self.assertEqual([s["ok"] for s in result["steps"]], [True, False], result)
+        self.assertIn("weigerde alle 4", result["steps"][1]["detail"])
+        self.assertEqual(MockCollectAndGo.cart, [])
+
+    def test_search_uses_the_store_catalogue_and_falls_back(self):
+        self.c.connect(self.db, self.GOOD)
+        client = self.c.client(self.db)
+        for how, expected in (("ok", "10646"), ("empty", "10429"), ("error", "10429")):
+            MockCollectAndGo.store_search = how
+            self.assertEqual(len(client.search("melk", 3)), 3, how)
+            self.assertEqual(client.search_catalog, expected, how)
 
     def test_expired_and_throttled_are_told_apart(self):
         self.c.connect(self.db, self.GOOD.replace("secretTOKENvalue", "oldTOKEN"))
