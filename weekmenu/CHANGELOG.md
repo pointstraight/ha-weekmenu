@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.1
+- AI: het model dacht eerst na en gebruikte daarmee de hele antwoordruimte op, zodat er geen antwoord meer kwam ("geen JSON in het AI-antwoord", "AI-antwoord is geen lijst"). Nadenken staat nu uit voor deze taken; een model dat dat niet toelaat krijgt extra ruimte.
+- Een afgekapt AI-antwoord wordt als zodanig gemeld in het logboek.
+
 ## 0.5.0
 - Boodschappen: koppel de lijst aan Colruyt-producten (uit het assortiment van je winkel) met een voorstel voor product en aantal verpakkingen.
 - Je kunt elk product en aantal aanpassen of een lijn overslaan; keuzes worden onthouden voor volgende weken.

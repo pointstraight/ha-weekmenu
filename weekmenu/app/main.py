@@ -23,7 +23,7 @@ from crawler import BASE, Crawler
 from db import DB, TAGS, now_iso
 from recipe_parser import PARSER_VERSION
 
-VERSION = "0.5.0"
+VERSION = "0.5.1"
 PORT = int(os.environ.get("WEEKMENU_PORT", "8099"))
 DISPLAY_PORT = int(os.environ.get("WEEKMENU_DISPLAY_PORT", "8100"))   # read-only family display
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")

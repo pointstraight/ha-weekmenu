@@ -35,19 +35,45 @@ def available():
     return bool(api_key())
 
 
-def call(db, purpose, system, user, max_tokens=1500):
-    """One Messages API call; returns the text. Raises on failure."""
-    body = json.dumps({"model": model(), "max_tokens": max_tokens, "system": system,
-                       "messages": [{"role": "user", "content": user}]}).encode()
-    req = urllib.request.Request(API_URL, data=body, method="POST", headers={
+# Newer models think before they answer, and that thinking counts toward max_tokens: a limit sized
+# for the answer alone is then used up before any text appears. These jobs are mechanical, so
+# thinking is switched off; a model that refuses that gets room to think instead.
+THINK_ROOM = 16000
+_keeps_thinking = set()
+
+
+def _post(payload):
+    req = urllib.request.Request(API_URL, data=json.dumps(payload).encode(), method="POST", headers={
         "x-api-key": api_key(), "anthropic-version": "2023-06-01", "content-type": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=90) as resp:
-            data = json.loads(resp.read().decode())
+        with urllib.request.urlopen(req, timeout=180) as resp:
+            return json.loads(resp.read().decode())
     except urllib.error.HTTPError as e:
         raise RuntimeError(f"AI-oproep mislukt (HTTP {e.code}): {e.read().decode(errors='replace')[:300]}") from e
-    db.log_ai(purpose, model(), data.get("usage") or {})
-    return "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
+
+
+def call(db, purpose, system, user, max_tokens=1500):
+    """One Messages API call; returns the text. Raises on failure or a cut-off answer."""
+    m = model()
+    payload = {"model": m, "max_tokens": max_tokens, "system": system,
+               "messages": [{"role": "user", "content": user}]}
+    data = None
+    if m not in _keeps_thinking:
+        try:
+            data = _post(dict(payload, thinking={"type": "disabled"}))
+        except RuntimeError as e:
+            if "HTTP 400" not in str(e) or "thinking" not in str(e).lower():
+                raise
+            _keeps_thinking.add(m)
+    if data is None:
+        data = _post(dict(payload, max_tokens=max_tokens + THINK_ROOM))
+    db.log_ai(purpose, m, data.get("usage") or {})
+    text = "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
+    if data.get("stop_reason") == "max_tokens":
+        raise RuntimeError("het AI-antwoord was te lang en is afgekapt")
+    if not text.strip():
+        raise RuntimeError("het AI-antwoord bevatte geen tekst")
+    return text
 
 
 def extract_json(text):

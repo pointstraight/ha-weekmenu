@@ -305,13 +305,33 @@ class EndToEndTests(unittest.TestCase):
 class MockAI(BaseHTTPRequestHandler):
     """Stands in for the Messages API: tags by keyword, picks menu days (one of them on purpose invalid)."""
     calls = []
+    requests = []
+    refuse_disabled = False     # behave like a model that cannot switch thinking off
 
     def log_message(self, *a):
         pass
 
+    def _send(self, code, obj):
+        body = json.dumps(obj).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_POST(self):
         import re
         req = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        MockAI.requests.append(req)
+        thinking_off = (req.get("thinking") or {}).get("type") == "disabled"
+        if thinking_off and MockAI.refuse_disabled:
+            return self._send(400, {"type": "error", "error": {"type": "invalid_request_error",
+                              "message": '"thinking.type.disabled" is not supported for this model.'}})
+        if not thinking_off and req["max_tokens"] < 10000:
+            # like the real model: it thinks first, and the thinking uses up a small limit
+            MockAI.calls.append((self.headers.get("x-api-key"), req["model"]))
+            return self._send(200, {"content": [{"type": "thinking", "thinking": "..."}], "stop_reason": "max_tokens",
+                                    "usage": {"input_tokens": 1234, "output_tokens": req["max_tokens"]}})
         MockAI.calls.append((self.headers.get("x-api-key"), req["model"]))
         user = req["messages"][0]["content"]
         if "match lines" in req["system"]:
@@ -341,13 +361,11 @@ class MockAI(BaseHTTPRequestHandler):
             out = {"days": [{"date": d, "id": ids[i * 3 % len(ids)], "reason": "past bij het seizoen"}
                             for i, d in enumerate(dict.fromkeys(dates))]}
             out["days"].append({"date": "1999-01-01", "id": 99999, "reason": "ongeldig"})
-        body = json.dumps({"content": [{"type": "text", "text": "```json\n" + json.dumps(out) + "\n```"}],
-                           "usage": {"input_tokens": 1234, "output_tokens": 56}}).encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        content = [{"type": "text", "text": "```json\n" + json.dumps(out) + "\n```"}]
+        if not thinking_off:
+            content.insert(0, {"type": "thinking", "thinking": "..."})
+        self._send(200, {"content": content, "stop_reason": "end_turn",
+                         "usage": {"input_tokens": 1234, "output_tokens": 56}})
 
 
 class AITests(unittest.TestCase):
@@ -360,6 +378,9 @@ class AITests(unittest.TestCase):
         ai.API_URL = f"http://127.0.0.1:{self.srv.server_address[1]}/v1/messages"
         os.environ["ANTHROPIC_API_KEY"] = "test-key"
         MockAI.calls.clear()
+        MockAI.requests.clear()
+        MockAI.refuse_disabled = False
+        ai._keeps_thinking.clear()
         self.db = DB(os.path.join(tempfile.mkdtemp(), "ai.db"))
         fill_catalog(self.db)
         self.today = date(2026, 11, 30)
@@ -400,6 +421,33 @@ class AITests(unittest.TestCase):
         self.assertEqual(len(MockAI.calls), 1)
         self.assertEqual(self.ai.tag_unsure(self.db), 0)       # nothing left: no further calls
         self.assertEqual(len(MockAI.calls), 1)
+
+    def test_thinking_is_switched_off_so_a_small_limit_is_enough(self):
+        text = self.ai.call(self.db, "selection", "plan", "2026-12-01\n1 | Stoemp", max_tokens=900)
+        self.assertIn("days", text)
+        self.assertEqual(MockAI.requests[-1]["thinking"], {"type": "disabled"})
+        self.assertEqual(MockAI.requests[-1]["max_tokens"], 900)
+
+    def test_model_that_cannot_stop_thinking_gets_room_instead(self):
+        MockAI.refuse_disabled = True
+        text = self.ai.call(self.db, "selection", "plan", "2026-12-01\n1 | Stoemp", max_tokens=900)
+        self.assertIn("days", text)
+        self.assertEqual(len(MockAI.requests), 2)
+        self.assertNotIn("thinking", MockAI.requests[-1])
+        self.assertEqual(MockAI.requests[-1]["max_tokens"], 900 + self.ai.THINK_ROOM)
+        self.ai.call(self.db, "selection", "plan", "2026-12-01\n1 | Stoemp", max_tokens=900)
+        self.assertEqual(len(MockAI.requests), 3)              # remembered: no second refused attempt
+        self.assertEqual(self.db.one("SELECT COUNT(*) AS n FROM ai_usage")["n"], 2)
+
+    def test_cut_off_answer_is_reported_as_such(self):
+        self.ai._keeps_thinking.add(self.ai.model())
+        room, self.ai.THINK_ROOM = self.ai.THINK_ROOM, 0       # thinking on, no room: the answer never comes
+        try:
+            with self.assertRaisesRegex(RuntimeError, "afgekapt"):
+                self.ai.call(self.db, "selection", "plan", "2026-12-01\n1 | Stoemp", max_tokens=900)
+        finally:
+            self.ai.THINK_ROOM = room
+        self.assertEqual(self.db.one("SELECT COUNT(*) AS n FROM ai_usage")["n"], 1)   # still counted as usage
 
     def test_ai_failure_falls_back_to_rules(self):
         self.ai.API_URL = "http://127.0.0.1:9/v1/messages"     # nothing listens here
