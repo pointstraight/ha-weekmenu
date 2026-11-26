@@ -635,6 +635,7 @@ class MockCollectAndGo(BaseHTTPRequestHandler):
     cart = []
     seen = []
     mode = "ok"          # ok | throttle_cart | throttle_all
+    put_delete = "ok"            # ok | refuse: whether PUT delete_order_item works (else only quantity 0 removes a line)
     refuse = set()               # product ids the shop refuses to add (HTTP 400 with its own error text)
     store_search = "ok"          # ok | empty | error: how a search in the store's own catalogue behaves
     answer_with_id = True        # the real shop answers a cart POST with the new orderItemId
@@ -693,17 +694,26 @@ class MockCollectAndGo(BaseHTTPRequestHandler):
                 line_id = f"L{len(self.cart) + 1}"
                 part = f"ART{item['productId']}" if self.line_shape == "real" else item["productId"]
                 MockCollectAndGo.cart.append({"orderItemId": line_id, "partNumber": part, "quantity": item["quantity"],
-                                              "productName": "Citroen", "_product": item["productId"]})
+                                              "xitem_productName": "Citroenen 1kg", "xitem_BrandName": "BONI", "xitem_field2": item["xitem_field2"],
+                                              "unitQuantity": "1.0", "_product": item["productId"]})
             return self._reply(201, {"orderId": "1", "orderItem": [{"orderItemId": line_id}]} if self.answer_with_id else {"orderId": "1"})
         if u.path.endswith("/update_order_item") and method == "PUT":
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            want = body["orderItem"][0]
+            if want["quantity"] == "0":
+                MockCollectAndGo.cart[:] = [i for i in self.cart if i["orderItemId"] != want["orderItemId"]]
             for line in self.cart:
-                if line["orderItemId"] == body["orderItem"][0]["orderItemId"]:
-                    line["quantity"] = body["orderItem"][0]["quantity"]
+                if line["orderItemId"] == want["orderItemId"]:
+                    line["quantity"] = want["quantity"]
             return self._reply(200)
-        if u.path.endswith("/delete_order_item") and method == "DELETE":
-            MockCollectAndGo.cart[:] = [i for i in self.cart if i["orderItemId"] != q.get("orderItemId")]
+        if u.path.endswith("/delete_order_item") and method == "PUT":
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            if self.put_delete != "ok":
+                return self._reply(400, {"errors": [{"errorKey": "_ERR_CMD_INVALID_PARAM"}]})
+            MockCollectAndGo.cart[:] = [i for i in self.cart if i["orderItemId"] != body.get("orderItemId")]
             return self._reply(200)
+        if method == "DELETE":
+            return self._reply(405)                       # the real shop: method not allowed
         if u.path.endswith("/order/@history"):
             return self._reply(200, {"Order": []})
         self._reply(404)
@@ -735,7 +745,7 @@ class ColruytTests(unittest.TestCase):
         colruyt.CART, colruyt.SEARCH, colruyt.ORDERS = base + "/cartsvc/store/90004", base + "/searchsvc/store/90004", base + "/ordersvc/store/90004"
         MockCollectAndGo.cart, MockCollectAndGo.seen, MockCollectAndGo.mode = [], [], "ok"
         MockCollectAndGo.answer_with_id, MockCollectAndGo.line_shape = True, "real"
-        MockCollectAndGo.refuse, MockCollectAndGo.store_search = set(), "ok"
+        MockCollectAndGo.refuse, MockCollectAndGo.store_search, MockCollectAndGo.put_delete = set(), "ok", "ok"
         self.db = DB(os.path.join(tempfile.mkdtemp(), "c.db"))
 
     def tearDown(self):
@@ -804,6 +814,34 @@ class ColruytTests(unittest.TestCase):
             self.assertEqual([s["ok"] for s in result["steps"]], [True, True, True, True], result)
             self.assertEqual(result["steps"][-1]["detail"], "aantal weer teruggezet")
             self.assertEqual([(i["orderItemId"], i["quantity"]) for i in MockCollectAndGo.cart], [("OLD", "1")])
+
+    def test_removal_falls_back_to_quantity_zero(self):
+        self.c.connect(self.db, self.GOOD)
+        result = self.c.test(self.db, "write")
+        self.assertEqual(result["debug"]["removed_by"], "delete_order_item")
+        self.assertFalse(any(x[0] == "DELETE" for x in MockCollectAndGo.seen))             # the call the shop answers with 405 is gone
+        MockCollectAndGo.put_delete = "refuse"
+        result = self.c.test(self.db, "write")
+        self.assertEqual([s["ok"] for s in result["steps"]], [True, True, True, True], result)
+        self.assertEqual(result["debug"]["removed_by"], "aantal 0")
+        self.assertEqual(MockCollectAndGo.cart, [])
+        self.assertEqual(result["debug"]["test_line"]["marker"], "P|1|st")
+        self.assertEqual(result["steps"][2]["detail"], "staat in de winkelmand als “BONI Citroenen 1kg”")
+
+    def test_real_product_and_price_shapes(self):
+        P = self.c._product
+        real = P({"uniqueID": "3074457345616845912", "partNumber": "38925-P", "name": "BONI Citroenen 1kg", "buyable": "true",
+                  "isProductAvailable": "true", "isProductRanged": "true", "x_soldPerPack": "N", "x_soldPerPiece": "Y",
+                  "singleSKUCatalogEntryID": "3074457345616845913", "x_techArticleId": "38925",
+                  "xprice": {"basicPrice": "2,49", "measurementUnitPrice": "2,49", "measurementUnit": "K"}})
+        self.assertEqual((real["name"], real["price"], real["available"], real["sku_id"], real["tech_id"]),
+                         ("BONI Citroenen 1kg", 2.49, True, "3074457345616845913", "38925"))
+        self.assertEqual(real["hints"]["x_soldPerPiece"], "Y")
+        self.assertEqual(real["price_shape"], {"basicPrice": "str", "measurementUnitPrice": "str", "measurementUnit": "str"})
+        self.assertFalse(P({"uniqueID": "1", "buyable": "false"})["available"])              # the string "false" is not available
+        self.assertFalse(P({"uniqueID": "1", "buyable": "true", "isProductRanged": "false"})["available"])
+        line = {"ids": {"38925"}}
+        self.assertTrue(self.c._same_product(line, real))                                    # cart line carries the technical id
 
     def test_write_test_moves_on_when_the_shop_refuses_a_product(self):
         self.c.connect(self.db, self.GOOD)

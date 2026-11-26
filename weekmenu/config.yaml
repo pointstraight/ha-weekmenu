@@ -1,5 +1,5 @@
 name: "Weekmenu"
-version: "0.4.3"
+version: "0.4.4"
 slug: "weekmenu"
 description: "Wekelijks menuvoorstel uit Dagelijkse kost, met instelbare mix en tijdslimiet"
 url: "https://github.com/pointstraight/ha-weekmenu"

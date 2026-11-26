@@ -173,6 +173,8 @@ class Client:
             if e.code in (401, 403):
                 raise SessionExpired("Collect&Go weigert de sessie: log opnieuw in en verbind opnieuw.") from None
             if e.code in (405, 429, 456):
+                if e.code == 405:
+                    raise RateLimited("Collect&Go staat dit verzoek niet toe (HTTP 405): tijdelijk geblokkeerd of niet de juiste aanroep.") from None
                 raise RateLimited(f"Collect&Go vraagt om te vertragen (HTTP {e.code}). Probeer het over enkele minuten opnieuw.") from None
             reason = _error_text(e)
             err = ColruytError(f"Collect&Go weigert dit verzoek (HTTP {e.code})" + (f": {reason}" if reason else "."))
@@ -215,12 +217,16 @@ class Client:
             entry = i.get("catalogEntry") if isinstance(i.get("catalogEntry"), dict) else {}
             ids = set()
             for value in (i.get("partNumber"), i.get("productId"), i.get("catEntryId"), i.get("catalogEntryId"),
-                          entry.get("uniqueID"), entry.get("partNumber")):
+                          i.get("xitem_technicalId"), i.get("xitem_parentProductId"), entry.get("uniqueID"), entry.get("partNumber")):
                 ids |= _id_forms(value)
+            name = " ".join(str(x) for x in (i.get("xitem_BrandName"), i.get("xitem_productName") or i.get("xitem_LongNameDescription")
+                                             or i.get("productName") or i.get("description") or entry.get("name"),
+                                             i.get("xitem_LongNameContent")) if x)
             items.append({"id": str(i.get("orderItemId") or i.get("itemId") or ""),
                           "entry_id": str(i.get("partNumber") or i.get("catEntryId") or i.get("productId") or ""),
-                          "name": str(i.get("productName") or i.get("description") or entry.get("name") or i.get("partNumber") or ""),
-                          "quantity": _num(i.get("quantity")) or 1, "ids": ids, "fields": sorted(i)})
+                          "name": name or str(i.get("partNumber") or ""), "quantity": _num(i.get("quantity")) or 1,
+                          "marker": str(i.get("xitem_field2") or ""), "unit_quantity": str(i.get("unitQuantity") or ""),
+                          "ids": ids, "fields": sorted(i)})
         return {"items": items, "total": _num(data.get("grandTotal") or data.get("totalProductPrice"))}
 
     def add(self, entry_id, quantity=1):
@@ -228,17 +234,37 @@ class Client:
         item = {"productId": str(entry_id), "quantity": str(quantity), "xitem_field2": f"P|{quantity}|st"}
         return self._call("POST", f"{CART}/cart", {"langId": LANG_ID, "catalogId": self.catalog}, {"orderItem": [item]})
 
-    def update(self, order_item_id, quantity, part_number=None):
-        quantity = max(1, int(quantity))
-        item = {"orderItemId": str(order_item_id), "quantity": str(quantity), "xitem_field2": f"P|{quantity}|st"}
+    def update(self, order_item_id, quantity, part_number=None, marker=None):
+        quantity = max(0, int(quantity))
+        unit = (marker or "").split("|")
+        item = {"orderItemId": str(order_item_id), "quantity": str(quantity),
+                "xitem_field2": f"{unit[0]}|{quantity}|{unit[2]}" if len(unit) == 3 else f"P|{quantity}|st"}
         if part_number:
             item["partNumber"] = str(part_number)
         return self._call("PUT", f"{CART}/cart/@self/update_order_item", {"langId": LANG_ID, "catalogId": self.catalog},
                           {"orderItem": [item], "catalogId": self.catalog, "langId": LANG_ID})
 
-    def remove(self, order_item_id):
-        return self._call("DELETE", f"{CART}/cart/@self/delete_order_item",
-                          {"orderItemId": str(order_item_id), "langId": LANG_ID, "catalogId": self.catalog})
+    def remove(self, order_item_id, part_number=None, marker=None):
+        """Remove one cart line. Returns the way that worked. The shop platform's own call is a PUT
+        on delete_order_item; setting the quantity to 0 is the documented alternative."""
+        params = {"langId": LANG_ID, "catalogId": self.catalog}
+        tried = []
+        for how, call in (
+            ("delete_order_item", lambda: self._call("PUT", f"{CART}/cart/@self/delete_order_item", params,
+                                                     {"orderItemId": str(order_item_id), "catalogId": self.catalog, "langId": LANG_ID})),
+            ("aantal 0", lambda: self.update(order_item_id, 0, part_number, marker)),
+        ):
+            try:
+                call()
+            except SessionExpired:
+                raise
+            except ColruytError as e:
+                tried.append(f"{how}: {e}")
+                continue
+            if not any(i["id"] == str(order_item_id) for i in self.cart()["items"]):
+                return how
+            tried.append(f"{how}: aanvaard, maar de lijn staat er nog")
+        raise ColruytError("verwijderen is niet gelukt (" + "; ".join(tried) + ")")
 
     def orders(self):
         return self._call("GET", f"{ORDERS}/order/@history", {"langId": LANG_ID, "catalogId": self.catalog})
@@ -256,7 +282,10 @@ def _id_forms(value):
 
 
 def _same_product(line, product):
-    return bool(line["ids"] & (_id_forms(product["entry_id"]) | _id_forms(product["part_number"])))
+    mine = set()
+    for key in ("entry_id", "part_number", "sku_id", "tech_id"):
+        mine |= _id_forms(product.get(key))
+    return bool(line["ids"] & mine)
 
 
 def _added_ids(response):
@@ -275,21 +304,55 @@ def _num(value):
         return None
 
 
+def _truthy(value, default=True):
+    if value is None:
+        return default
+    return str(value).strip().lower() in ("true", "1", "y", "yes", "j")
+
+
+def _price_of(value):
+    """Display price from the shop's price field, whatever its shape."""
+    if isinstance(value, list):
+        best = None
+        for entry in value:
+            if isinstance(entry, dict):
+                number = _num(entry.get("value") or entry.get("price") or entry.get("basePrice") or entry.get("basicPrice"))
+                if number is not None and (best is None or entry.get("usage") == "Display"):
+                    best = number
+        return best
+    if isinstance(value, dict):
+        for key in ("basicPrice", "price", "value", "recommendedQuantityPrice", "unitPrice"):
+            number = _num(value.get(key))
+            if number is not None:
+                return number
+        for inner in value.values():
+            number = _price_of(inner) if isinstance(inner, (dict, list)) else None
+            if number is not None:
+                return number
+    return _num(value) if isinstance(value, (str, int, float)) else None
+
+
 def _product(p):
-    price = None
-    for entry in p.get("price") or p.get("xprice") or []:
-        if isinstance(entry, dict):
-            value = _num(entry.get("value") or entry.get("price") or entry.get("basePrice"))
-            if value is not None and (price is None or entry.get("usage") == "Display"):
-                price = value
     hints = {k: v for k, v in p.items() if isinstance(v, (str, int, float, bool)) and len(str(v)) < 60
-             and re.search(r"unit|weight|quant|sell|order|pack|content|buyable|variable|type", k, re.I)}
+             and re.search(r"unit|weight|quant|sell|sold|order|pack|piece|content|buyable|available|ranged|variable|type|sku", k, re.I)}
+    available = _truthy(p.get("buyable", p.get("available"))) and _truthy(p.get("isProductAvailable")) and _truthy(p.get("isProductRanged"))
     return {"fields": sorted(p), "hints": hints,
             "entry_id": str(p.get("uniqueID") or ""), "part_number": str(p.get("partNumber") or ""),
-            "name": str(p.get("name") or p.get("shortDescription") or ""),
+            "sku_id": str(p.get("singleSKUCatalogEntryID") or ""), "tech_id": str(p.get("x_techArticleId") or ""),
+            "name": str(p.get("name") or p.get("productLongName") or p.get("shortDescription") or ""),
             "brand": str(p.get("manufacturer") or p.get("brand") or ""),
-            "content": str(p.get("content") or p.get("packaging") or ""), "price": price,
-            "available": bool(p.get("buyable", p.get("available", True)))}
+            "content": str(p.get("content") or p.get("packaging") or ""),
+            "price": _price_of(p.get("price") if p.get("price") is not None else p.get("xprice")),
+            "price_shape": _shape(p.get("xprice")), "available": available}
+
+
+def _shape(value, depth=0):
+    """Structure of a value without its content: lets us learn the price format from a test."""
+    if isinstance(value, dict):
+        return {k: _shape(v, depth + 1) for k, v in list(value.items())[:12]} if depth < 2 else "{…}"
+    if isinstance(value, list):
+        return [_shape(value[0], depth + 1)] if value and depth < 2 else "[…]"
+    return type(value).__name__
 
 
 def client(db):
@@ -375,6 +438,10 @@ def test(db, mode, query="melk"):
                 raise ColruytError("geen geschikt testproduct gevonden")
             if found[0]["fields"]:
                 debug["product_fields"] = found[0]["fields"]
+                debug["price_shape"] = found[0]["price_shape"]
+            debug["candidates"] = [{"name": p["name"], "part_number": p["part_number"], "price": p["price"], "hints": p["hints"]} for p in found[:6]]
+            debug["cart_lines"] = [{"name": i["name"], "quantity": i["quantity"], "marker": i["marker"], "unit_quantity": i["unit_quantity"]}
+                                   for i in before["items"][:12]]
             return f"{len(found)} kandidaten, eerste: {found[0]['name']}"
 
         def add():
@@ -428,15 +495,14 @@ def test(db, mode, query="melk"):
 
         def undo():
             line = state["line"]
+            debug["test_line"] = {"marker": line.get("marker"), "unit_quantity": line.get("unit_quantity"), "quantity": line.get("quantity")}
             if state["grew"]:
-                c.update(line["id"], int(line["quantity"]) - 1, line["entry_id"])
+                c.update(line["id"], int(line["quantity"]) - 1, line["entry_id"], line.get("marker"))
                 now = next((i for i in c.cart()["items"] if i["id"] == line["id"]), None)
                 if not now or now["quantity"] >= line["quantity"]:
                     raise ColruytError("het aantal terugzetten is niet gelukt")
                 return "aantal weer teruggezet"
-            c.remove(line["id"])
-            if any(i["id"] == line["id"] for i in c.cart()["items"]):
-                raise ColruytError("verwijderen is niet gelukt")
+            debug["removed_by"] = c.remove(line["id"], line.get("entry_id"), line.get("marker"))
             return "weer verwijderd"
 
         if step("Testproduct zoeken", find) and step("Toevoegen aan winkelmand", add):

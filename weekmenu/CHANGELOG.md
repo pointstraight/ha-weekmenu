@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.4
+- Collect&Go: een lijn uit de winkelmand verwijderen werkt nu met de aanroep die de winkel verwacht, met "aantal 0" als tweede weg.
+- Winkelmand toont productnamen in plaats van artikelnummers; beschikbaarheid en prijs worden correct gelezen.
+
 ## 0.4.3
 - Collect&Go: zoekt eerst in het assortiment van je eigen winkel.
 - Collect&Go-test: probeert een ander testproduct wanneer Collect&Go er een weigert, en toont de reden die Collect&Go zelf geeft.
