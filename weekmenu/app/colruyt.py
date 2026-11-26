@@ -209,7 +209,14 @@ class Client:
 
     # -- cart -----------------------------------------------------------------
     def cart(self):
-        data = self._call("GET", f"{CART}/cart/@self", {"langId": LANG_ID, "catalogId": self.catalog})
+        """The cart. With nothing in it the shop has no cart at all and answers HTTP 500/404; that is
+        returned as an empty cart with readable=False so callers can tell it from a confirmed read."""
+        try:
+            data = self._call("GET", f"{CART}/cart/@self", {"langId": LANG_ID, "catalogId": self.catalog})
+        except ColruytError as e:
+            if getattr(e, "status", None) in (404, 500):
+                return {"items": [], "total": None, "readable": False, "note": str(e)}
+            raise
         items = []
         for i in data.get("orderItem") or data.get("orderItems") or []:
             if not isinstance(i, dict):
@@ -227,7 +234,7 @@ class Client:
                           "name": name or str(i.get("partNumber") or ""), "quantity": _num(i.get("quantity")) or 1,
                           "marker": str(i.get("xitem_field2") or ""), "unit_quantity": str(i.get("unitQuantity") or ""),
                           "ids": ids, "fields": sorted(i)})
-        return {"items": items, "total": _num(data.get("grandTotal") or data.get("totalProductPrice"))}
+        return {"items": items, "total": _num(data.get("grandTotal") or data.get("totalProductPrice")), "readable": True}
 
     def add(self, entry_id, quantity=1):
         quantity = max(1, int(quantity))
@@ -366,7 +373,11 @@ def check(db):
         c = client(db)
         try:
             cart = c.cart()
-            _mark(db, True, f"Verbonden. Winkelmand: {len(cart['items'])} producten.")
+            if cart["readable"]:
+                _mark(db, True, f"Verbonden. Winkelmand: {len(cart['items'])} producten.")
+            else:
+                c.orders()                              # no cart to read: confirm the session on another endpoint
+                _mark(db, True, "Verbonden. Winkelmand is leeg.")
         except RateLimited:
             c.orders()                                  # friendlier endpoint when the cart is being throttled
             _mark(db, True, "Verbonden (winkelmand tijdelijk niet leesbaar).")
@@ -411,6 +422,8 @@ def test(db, mode, query="melk"):
     if mode == "read":
         def read():
             cart = c.cart()
+            if not cart["readable"]:
+                return "de winkelmand is leeg (Collect&Go geeft dan geen winkelmand terug)"
             names = ", ".join(i["name"] for i in cart["items"][:4] if i["name"])
             return f"{len(cart['items'])} producten in de winkelmand" + (f": {names}" + ("…" if len(cart["items"]) > 4 else "") if names else "")
         step("Winkelmand lezen", read)
@@ -428,6 +441,7 @@ def test(db, mode, query="melk"):
             before = c.cart()
             state["before"] = before
             debug["lines_before"] = len(before["items"])
+            debug["cart_was_empty"] = not before["readable"]
             found = [p for p in c.search("citroen", 12)
                      if p["available"] and p["entry_id"] and not any(_same_product(i, p) for i in before["items"])]
             debug["search_catalog"] = getattr(c, "search_catalog", None)

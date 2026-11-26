@@ -677,7 +677,10 @@ class MockCollectAndGo(BaseHTTPRequestHandler):
                 for i in range(int(q.get("pageSize", 3)))]})
         if u.path.endswith("/cart/@self") and method == "GET":
             if q.get("catalogId") != "10646":
-                return self._reply(500)
+                return self._reply(400)
+            if not self.cart:                             # the real shop: no cart exists when it is empty
+                return self._reply(500, {"errors": [{"errorKey": "ERR_INTERNAL_SERVER_ERROR",
+                                                     "errorMessage": "CWXFR0230E: Internal server error. Details will be stored within the server logs."}]})
             return self._reply(200, {"orderItem": list(self.cart), "grandTotal": "12,50"})
         if u.path.endswith("/cart") and method == "POST":
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
@@ -815,6 +818,20 @@ class ColruytTests(unittest.TestCase):
             self.assertEqual(result["steps"][-1]["detail"], "aantal weer teruggezet")
             self.assertEqual([(i["orderItemId"], i["quantity"]) for i in MockCollectAndGo.cart], [("OLD", "1")])
 
+    def test_empty_cart_is_not_an_error(self):
+        st = self.c.connect(self.db, self.GOOD)                                  # cart empty: the shop answers HTTP 500
+        self.assertEqual((st["ok"], st["message"]), (True, "Verbonden. Winkelmand is leeg."))
+        read = self.c.test(self.db, "read")
+        self.assertTrue(read["steps"][0]["ok"])
+        self.assertIn("leeg", read["steps"][0]["detail"])
+        result = self.c.test(self.db, "write")                                   # add to an empty cart, then remove the only line again
+        self.assertEqual([s["ok"] for s in result["steps"]], [True, True, True, True], result)
+        self.assertTrue(result["debug"]["cart_was_empty"])
+        self.assertEqual(MockCollectAndGo.cart, [])
+        # an expired session must still be reported as expired, not as an empty cart
+        st = self.c.connect(self.db, self.GOOD.replace("secretTOKENvalue", "oldTOKEN"))
+        self.assertIs(st["ok"], False)
+
     def test_removal_falls_back_to_quantity_zero(self):
         self.c.connect(self.db, self.GOOD)
         result = self.c.test(self.db, "write")
@@ -886,6 +903,7 @@ class ColruytTests(unittest.TestCase):
         day = datetime(2026, 12, 1, 9, 0)
         self.assertFalse(app.colruyt_daily_check(day))                                         # not connected: nothing to do
         self.c.connect(self.db, self.GOOD)
+        MockCollectAndGo.cart.append({"orderItemId": "L0", "partNumber": "ART1", "quantity": "1", "_product": "1"})
         before = len(MockCollectAndGo.seen)
         self.assertTrue(app.colruyt_daily_check(day))
         self.assertFalse(app.colruyt_daily_check(day.replace(hour=18)))

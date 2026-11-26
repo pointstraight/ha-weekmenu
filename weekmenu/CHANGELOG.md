@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.4.5
+- Collect&Go: een lege winkelmand wordt herkend. De winkel antwoordt dan met een fout (HTTP 500) in plaats van een lege lijst.
+
 ## 0.4.4
 - Collect&Go: een lijn uit de winkelmand verwijderen werkt nu met de aanroep die de winkel verwacht, met "aantal 0" als tweede weg.
 - Winkelmand toont productnamen in plaats van artikelnummers; beschikbaarheid en prijs worden correct gelezen.
