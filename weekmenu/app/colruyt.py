@@ -178,11 +178,17 @@ class Client:
         data = self._call("GET", f"{CART}/cart/@self", {"langId": LANG_ID, "catalogId": self.catalog})
         items = []
         for i in data.get("orderItem") or data.get("orderItems") or []:
-            if isinstance(i, dict):
-                items.append({"id": str(i.get("orderItemId") or i.get("itemId") or ""),
-                              "entry_id": str(i.get("partNumber") or i.get("catEntryId") or i.get("productId") or ""),
-                              "name": str(i.get("productName") or i.get("description") or i.get("partNumber") or ""),
-                              "quantity": _num(i.get("quantity")) or 1})
+            if not isinstance(i, dict):
+                continue
+            entry = i.get("catalogEntry") if isinstance(i.get("catalogEntry"), dict) else {}
+            ids = set()
+            for value in (i.get("partNumber"), i.get("productId"), i.get("catEntryId"), i.get("catalogEntryId"),
+                          entry.get("uniqueID"), entry.get("partNumber")):
+                ids |= _id_forms(value)
+            items.append({"id": str(i.get("orderItemId") or i.get("itemId") or ""),
+                          "entry_id": str(i.get("partNumber") or i.get("catEntryId") or i.get("productId") or ""),
+                          "name": str(i.get("productName") or i.get("description") or entry.get("name") or i.get("partNumber") or ""),
+                          "quantity": _num(i.get("quantity")) or 1, "ids": ids, "fields": sorted(i)})
         return {"items": items, "total": _num(data.get("grandTotal") or data.get("totalProductPrice"))}
 
     def add(self, entry_id, quantity=1):
@@ -190,12 +196,44 @@ class Client:
         item = {"productId": str(entry_id), "quantity": str(quantity), "xitem_field2": f"P|{quantity}|st"}
         return self._call("POST", f"{CART}/cart", {"langId": LANG_ID, "catalogId": self.catalog}, {"orderItem": [item]})
 
+    def update(self, order_item_id, quantity, part_number=None):
+        quantity = max(1, int(quantity))
+        item = {"orderItemId": str(order_item_id), "quantity": str(quantity), "xitem_field2": f"P|{quantity}|st"}
+        if part_number:
+            item["partNumber"] = str(part_number)
+        return self._call("PUT", f"{CART}/cart/@self/update_order_item", {"langId": LANG_ID, "catalogId": self.catalog},
+                          {"orderItem": [item], "catalogId": self.catalog, "langId": LANG_ID})
+
     def remove(self, order_item_id):
         return self._call("DELETE", f"{CART}/cart/@self/delete_order_item",
                           {"orderItemId": str(order_item_id), "langId": LANG_ID, "catalogId": self.catalog})
 
     def orders(self):
         return self._call("GET", f"{ORDERS}/order/@history", {"langId": LANG_ID, "catalogId": self.catalog})
+
+
+def _id_forms(value):
+    """An id as it may appear on either side: '14507-P' also counts as '14507'."""
+    text = str(value or "").strip()
+    if not text:
+        return set()
+    forms = {text}
+    if "-" in text and text.rsplit("-", 1)[-1].isalpha():
+        forms.add(text.rsplit("-", 1)[0])
+    return forms
+
+
+def _same_product(line, product):
+    return bool(line["ids"] & (_id_forms(product["entry_id"]) | _id_forms(product["part_number"])))
+
+
+def _added_ids(response):
+    """orderItemId(s) a cart POST answers with (standard for this shop platform)."""
+    found = []
+    for item in (response or {}).get("orderItem") or []:
+        if isinstance(item, dict) and item.get("orderItemId"):
+            found.append(str(item["orderItemId"]))
+    return found
 
 
 def _num(value):
@@ -273,7 +311,11 @@ def test(db, mode, query="melk"):
         return {"steps": [{"step": "Verbinding", "ok": False, "detail": str(e)}], "products": []}
     state = {}
     if mode == "read":
-        step("Winkelmand lezen", lambda: f"{len(c.cart()['items'])} producten in de winkelmand")
+        def read():
+            cart = c.cart()
+            names = ", ".join(i["name"] for i in cart["items"][:4] if i["name"])
+            return f"{len(cart['items'])} producten in de winkelmand" + (f": {names}" + ("…" if len(cart["items"]) > 4 else "") if names else "")
+        step("Winkelmand lezen", read)
     elif mode == "search":
         def do_search():
             found = c.search(query, 5)
@@ -281,31 +323,80 @@ def test(db, mode, query="melk"):
             return f"{len(found)} resultaten voor “{query}”" if found else f"geen resultaten voor “{query}”"
         step("Assortiment doorzoeken", do_search)
     elif mode == "write":
+        debug = {"catalog": c.catalog, "store_known": "COL_SHOP" in c.cookies}
+        state["debug"] = debug
+
         def find():
             before = c.cart()
-            in_cart = {i["entry_id"] for i in before["items"]}
+            state["before"] = before
+            debug["lines_before"] = len(before["items"])
             for p in c.search("citroen", 12):
-                if p["available"] and p["entry_id"] and p["entry_id"] not in in_cart:
+                if p["available"] and p["entry_id"] and not any(_same_product(i, p) for i in before["items"]):
                     state["product"] = p
-                    return f"{p['name']} ({p['content']})".strip()
+                    debug["product"] = {"entry_id": p["entry_id"], "part_number": p["part_number"]}
+                    return " ".join(x for x in (p["name"], f"({p['content']})" if p["content"] else "") if x)
             raise ColruytError("geen geschikt testproduct gevonden")
-        if step("Testproduct zoeken", find):
-            if step("Toevoegen aan winkelmand", lambda: (c.add(state["product"]["entry_id"], 1), "1 stuk toegevoegd")[1]):
-                def confirm():
-                    line = next((i for i in c.cart()["items"] if i["entry_id"] == state["product"]["entry_id"]), None)
-                    if not line:
-                        raise ColruytError("het product staat niet in de winkelmand")
-                    state["line"] = line
-                    return "staat in de winkelmand"
-                if step("Controleren", confirm):
-                    def undo():
-                        c.remove(state["line"]["id"])
-                        if any(i["id"] == state["line"]["id"] for i in c.cart()["items"]):
-                            raise ColruytError("verwijderen is niet gelukt")
-                        return "weer verwijderd"
-                    if not step("Testproduct verwijderen", undo):
-                        steps.append({"step": "Let op", "ok": False,
-                                      "detail": f"“{state['product']['name']}” staat nog in je winkelmand; verwijder het in Collect&Go."})
+
+        def add():
+            response = c.add(state["product"]["entry_id"], 1)
+            state["added"] = _added_ids(response)
+            debug["add_response_fields"] = sorted(response) if isinstance(response, dict) else str(type(response))
+            debug["add_returned_line_id"] = bool(state["added"])
+            return "verzoek aanvaard door Collect&Go"
+
+        def locate():
+            """Our line in the cart: (line, grew) or (None, False)."""
+            after = c.cart()
+            debug["lines_after"] = len(after["items"])
+            if after["items"]:
+                debug["cart_line_fields"] = after["items"][0]["fields"]
+            old = {i["id"]: i["quantity"] for i in state["before"]["items"]}
+            for i in after["items"]:
+                if i["id"] in state.get("added", []):
+                    return i, i["id"] in old and i["quantity"] > old[i["id"]]
+            fresh = [i for i in after["items"] if i["id"] not in old]
+            if len(fresh) == 1 or any(_same_product(i, state["product"]) for i in fresh):
+                return next((i for i in fresh if _same_product(i, state["product"])), fresh[0]), False
+            grown = [i for i in after["items"] if i["id"] in old and i["quantity"] > old[i["id"]]]
+            if len(grown) == 1:
+                return grown[0], True
+            return None, False
+
+        def confirm():
+            line, grew = locate()
+            if not line:
+                time.sleep(0 if os.environ.get("WEEKMENU_FAST") else 4)      # the cart can lag a moment behind
+                line, grew = locate()
+            if not line:
+                raise ColruytError("het product is niet terug te vinden in de winkelmand")
+            state["line"], state["grew"] = line, grew
+            debug["found_by"] = "id uit antwoord" if line["id"] in state.get("added", []) else ("bestaande lijn" if grew else "nieuwe lijn")
+            return f"staat in de winkelmand als “{line['name']}”" if line["name"] else "staat in de winkelmand"
+
+        def undo():
+            line = state["line"]
+            if state["grew"]:
+                c.update(line["id"], int(line["quantity"]) - 1, line["entry_id"])
+                now = next((i for i in c.cart()["items"] if i["id"] == line["id"]), None)
+                if not now or now["quantity"] >= line["quantity"]:
+                    raise ColruytError("het aantal terugzetten is niet gelukt")
+                return "aantal weer teruggezet"
+            c.remove(line["id"])
+            if any(i["id"] == line["id"] for i in c.cart()["items"]):
+                raise ColruytError("verwijderen is niet gelukt")
+            return "weer verwijderd"
+
+        if step("Testproduct zoeken", find) and step("Toevoegen aan winkelmand", add):
+            found = step("Controleren", confirm)
+            if not found and state.get("added"):                              # not visible, but we know its id: still clean up
+                state["line"], state["grew"] = {"id": state["added"][0], "name": "", "quantity": 1, "entry_id": ""}, False
+            if state.get("line"):
+                if not step("Testproduct verwijderen", undo):
+                    steps.append({"step": "Let op", "ok": False,
+                                  "detail": f"“{state['product']['name']}” staat mogelijk nog in je winkelmand; verwijder het in Collect&Go."})
+            else:
+                steps.append({"step": "Let op", "ok": False,
+                              "detail": f"Kijk in Collect&Go of “{state['product']['name']}” in je winkelmand staat en verwijder het daar."})
     if steps and all(s["ok"] for s in steps):
         _mark(db, True, "Verbonden.")
-    return {"steps": steps, "products": state.get("products", [])}
+    return {"steps": steps, "products": state.get("products", []), "debug": state.get("debug")}

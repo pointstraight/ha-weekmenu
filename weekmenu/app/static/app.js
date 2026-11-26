@@ -166,18 +166,20 @@ function renderColruyt() {
   const c = S.colruyt, root = $("#tab-colruyt");
   const state = !c.connected ? ["Niet verbonden", "busy"] : c.ok === false ? ["Verlopen – opnieuw verbinden", "error"] : c.ok ? ["Verbonden", ""] : ["Verbonden, nog niet bevestigd", "busy"];
   const res = cgResult ? `<h3>Resultaat van de test</h3><ul class="shop">${cgResult.steps.map((s) => `<li><span class="what"><b>${s.ok ? "Gelukt" : "Mislukt"}</b> · ${esc(s.step)}</span><span class="amount" style="white-space:normal;text-align:right">${esc(s.detail)}</span></li>`).join("")}</ul>
+    ${cgResult.debug ? `<details style="margin-top:10px"><summary style="cursor:pointer;min-height:32px" class="muted">Technische details van deze test</summary><pre class="report" id="cgdebug">${esc(JSON.stringify({ steps: cgResult.steps, debug: cgResult.debug }, null, 1))}</pre><button class="btn small" id="cgcopy">Kopieer details</button></details>` : ""}
     ${cgResult.products && cgResult.products.length ? `<div class="scroll"><table><thead><tr><th>Product</th><th>Merk</th><th>Inhoud</th><th class="num">Prijs</th></tr></thead><tbody>${cgResult.products.map((p) => `<tr><td>${esc(p.name)}</td><td>${esc(p.brand)}</td><td>${esc(p.content)}</td><td class="num">${p.price == null ? "–" : "€ " + p.price.toFixed(2).replace(".", ",")}</td></tr>`).join("")}</tbody></table></div>` : ""}` : "";
   const body = !c.connected || c.ok === false
     ? `<p>${c.ok === false ? "De sessie bij Collect&Go is verlopen. Log opnieuw in en verbind opnieuw:" : "Verbind de app met je Collect&Go-account om later je boodschappenlijst naar je winkelmand te sturen:"}</p>${cgForm("Verbind")}`
     : `<table><tbody>
         <tr><th>Account</th><td>${esc(c.account || "–")}</td></tr>
         <tr><th>Verbonden sinds</th><td>${fmtTs(c.saved_at)}</td></tr>
-        <tr><th>Laatst gecontroleerd</th><td>${fmtTs(c.checked_at)}${c.message ? " · " + esc(c.message) : ""}</td></tr></tbody></table>
+        <tr><th>Laatst gecontroleerd</th><td>${fmtTs(c.checked_at)}${c.message ? " · " + esc(c.message) : ""}</td></tr>
+        <tr><th>Winkel</th><td>${c.store_known ? "bekend uit je sessie" : "niet gevonden in wat je plakte; plak het volledige cURL-commando zodat ook je winkel mee komt"}</td></tr></tbody></table>
       <h3>Testen</h3>
       <div class="row"><button class="btn" data-cgtest="read">Lees winkelmand</button>
         <input type="search" id="cgq" value="melk" aria-label="Zoekterm" style="width:140px"><button class="btn" data-cgtest="search">Zoek in assortiment</button></div>
       <div class="row" style="margin-top:10px"><button class="btn" data-cgtest="write">Test toevoegen en verwijderen</button>
-        <span class="muted">Zet één citroen in je echte winkelmand en haalt die er meteen weer uit.</span></div>
+        <span class="muted">Zet één citroenproduct in je echte winkelmand en haalt het er meteen weer uit.</span></div>
       ${res}
       <details style="margin-top:18px;border-top:1px solid var(--line);padding-top:10px"><summary style="cursor:pointer;font-weight:600;min-height:32px">Opnieuw verbinden of verbreken</summary>
         ${cgForm("Verbind opnieuw")}
@@ -330,6 +332,7 @@ document.addEventListener("click", (e) => {
   if (d.never) return act(async () => { await api("api/recipe", { url: d.never, blocked: true }); await api("api/replace", { start: d.start, day: d.day }); }, "Gerecht wordt niet meer voorgesteld");
   if (d.approve) return act(() => api("api/approve", { start: d.approve, undo: !!d.undo }), d.undo ? "Menu heropend" : "Menu goedgekeurd");
   if (t.id === "cgconnect") { const v = $("#cgpaste").value; if (!v.trim()) return toast("Plak eerst de gekopieerde sessie"); t.disabled = true; return cgAct(() => api("api/colruyt/connect", { paste: v }), "Sessie bewaard en gecontroleerd"); }
+  if (t.id === "cgcopy") return navigator.clipboard.writeText($("#cgdebug").textContent).then(() => toast("Details gekopieerd"), () => toast("Kopiëren lukt hier niet; selecteer de tekst"));
   if (t.id === "cgdisconnect") { cgResult = null; return cgAct(() => api("api/colruyt/disconnect", {}), "Verbinding verbroken"); }
   if (d.cgtest) { t.disabled = true; t.textContent = "Bezig…"; return cgAct(() => api("api/colruyt/test", { mode: d.cgtest, query: ($("#cgq") || {}).value || "melk" })); }
   if (d.tidy) return act(() => api("api/job", { kind: "tidy", start: d.tidy }), "Lijst wordt opgeschoond");

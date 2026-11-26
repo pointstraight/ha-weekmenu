@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.1
+- Collect&Go-test: het testproduct wordt nu teruggevonden en weer verwijderd, ook als het al in de winkelmand stond (dan wordt het aantal teruggezet).
+- Technische details van de test zijn te kopiëren.
+
 ## 0.4.0
 - Nieuwe weergave voor het gezin: het gerecht van vandaag groot in beeld, met de volgende dagen eronder. Alleen lezen, bedoeld voor een dashboard of tablet.
 - Bereikbaar via de knop "Weergave voor het gezin" en rechtstreeks op poort 8100 (voor een webpagina-kaart in Home Assistant).

@@ -635,6 +635,8 @@ class MockCollectAndGo(BaseHTTPRequestHandler):
     cart = []
     seen = []
     mode = "ok"          # ok | throttle_cart | throttle_all
+    answer_with_id = True        # the real shop answers a cart POST with the new orderItemId
+    line_shape = "real"          # real: line carries its own article number, not the product's uniqueID
     TOKEN = "1234567%2CsecretTOKENvalue"
 
     def log_message(self, *a):
@@ -677,9 +679,22 @@ class MockCollectAndGo(BaseHTTPRequestHandler):
             item = body["orderItem"][0]
             if item["xitem_field2"] != f"P|{item['quantity']}|st":
                 return self._reply(400)
-            MockCollectAndGo.cart.append({"orderItemId": f"L{len(self.cart) + 1}", "partNumber": item["productId"],
-                                          "quantity": item["quantity"], "productName": "Citroen"})
-            return self._reply(201, {"orderId": "1"})
+            existing = next((i for i in self.cart if i.get("_product") == item["productId"]), None)
+            if existing:                                  # same product again: the shop raises the quantity of that line
+                existing["quantity"] = str(int(existing["quantity"]) + int(item["quantity"]))
+                line_id = existing["orderItemId"]
+            else:
+                line_id = f"L{len(self.cart) + 1}"
+                part = f"ART{item['productId']}" if self.line_shape == "real" else item["productId"]
+                MockCollectAndGo.cart.append({"orderItemId": line_id, "partNumber": part, "quantity": item["quantity"],
+                                              "productName": "Citroen", "_product": item["productId"]})
+            return self._reply(201, {"orderId": "1", "orderItem": [{"orderItemId": line_id}]} if self.answer_with_id else {"orderId": "1"})
+        if u.path.endswith("/update_order_item") and method == "PUT":
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            for line in self.cart:
+                if line["orderItemId"] == body["orderItem"][0]["orderItemId"]:
+                    line["quantity"] = body["orderItem"][0]["quantity"]
+            return self._reply(200)
         if u.path.endswith("/delete_order_item") and method == "DELETE":
             MockCollectAndGo.cart[:] = [i for i in self.cart if i["orderItemId"] != q.get("orderItemId")]
             return self._reply(200)
@@ -696,6 +711,9 @@ class MockCollectAndGo(BaseHTTPRequestHandler):
     def do_DELETE(self):
         self._handle("DELETE")
 
+    def do_PUT(self):
+        self._handle("PUT")
+
 
 class ColruytTests(unittest.TestCase):
     GOOD = ("WC_SESSION_ESTABLISHED=true; WC_ACTIVEPOINTER=-1001%2C90004; COL_SHOP=CLPBE_10646; _ga=GA1.2.3; reese84=abc; "
@@ -710,6 +728,7 @@ class ColruytTests(unittest.TestCase):
         self._old = (colruyt.CART, colruyt.SEARCH, colruyt.ORDERS)
         colruyt.CART, colruyt.SEARCH, colruyt.ORDERS = base + "/cartsvc/store/90004", base + "/searchsvc/store/90004", base + "/ordersvc/store/90004"
         MockCollectAndGo.cart, MockCollectAndGo.seen, MockCollectAndGo.mode = [], [], "ok"
+        MockCollectAndGo.answer_with_id, MockCollectAndGo.line_shape = True, "real"
         self.db = DB(os.path.join(tempfile.mkdtemp(), "c.db"))
 
     def tearDown(self):
@@ -749,13 +768,35 @@ class ColruytTests(unittest.TestCase):
         found = self.c.test(self.db, "search", "melk")
         self.assertTrue(found["steps"][0]["ok"])
         self.assertEqual((found["products"][0]["name"], found["products"][0]["brand"], found["products"][0]["price"]), ("Melk 0", "Boni", 1.29))
-        MockCollectAndGo.cart.append({"orderItemId": "L0", "partNumber": "9000", "quantity": "2", "productName": "Al in de mand"})
+        MockCollectAndGo.cart.append({"orderItemId": "L0", "partNumber": "9000", "quantity": "2", "productName": "Al in de mand", "_product": "9000"})
         result = self.c.test(self.db, "write")
         self.assertEqual([s["ok"] for s in result["steps"]], [True, True, True, True], result)
         self.assertEqual([i["orderItemId"] for i in MockCollectAndGo.cart], ["L0"])          # own line untouched, test line gone
         posts = [x for x in MockCollectAndGo.seen if x[0] == "POST"]
         self.assertEqual(len(posts), 1)
         self.assertEqual(posts[0][2]["catalogId"], "10646")                                   # store catalogue from COL_SHOP
+
+    def test_write_test_cleans_up_whatever_shape_the_cart_has(self):
+        self.c.connect(self.db, self.GOOD)
+        for with_id, shape in ((True, "real"), (False, "real"), (False, "simple"), (True, "simple")):
+            MockCollectAndGo.cart[:] = [{"orderItemId": "OWN", "partNumber": "ART1", "quantity": "2", "productName": "Eigen product", "_product": "1"}]
+            MockCollectAndGo.answer_with_id, MockCollectAndGo.line_shape = with_id, shape
+            result = self.c.test(self.db, "write")
+            self.assertEqual([s["ok"] for s in result["steps"]], [True, True, True, True], (with_id, shape, result))
+            self.assertEqual([(i["orderItemId"], i["quantity"]) for i in MockCollectAndGo.cart], [("OWN", "2")], (with_id, shape))
+            self.assertIn("lines_after", result["debug"])
+            self.assertNotIn("secretTOKENvalue", json.dumps(result))
+
+    def test_write_test_restores_quantity_when_the_product_was_already_in_the_cart(self):
+        # a lemon left behind by an earlier, failed test: the line does not carry the product's id, so it is not recognised up front
+        self.c.connect(self.db, self.GOOD)
+        MockCollectAndGo.cart[:] = [{"orderItemId": "OLD", "partNumber": "ART9000", "quantity": "1", "productName": "Citroen", "_product": "9000"}]
+        for with_id in (True, False):
+            MockCollectAndGo.answer_with_id = with_id
+            result = self.c.test(self.db, "write")
+            self.assertEqual([s["ok"] for s in result["steps"]], [True, True, True, True], result)
+            self.assertEqual(result["steps"][-1]["detail"], "aantal weer teruggezet")
+            self.assertEqual([(i["orderItemId"], i["quantity"]) for i in MockCollectAndGo.cart], [("OLD", "1")])
 
     def test_expired_and_throttled_are_told_apart(self):
         self.c.connect(self.db, self.GOOD.replace("secretTOKENvalue", "oldTOKEN"))
