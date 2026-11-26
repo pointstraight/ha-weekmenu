@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.2
+- Collect&Go blokkeerde de app na een honderdtal zoekopdrachten kort na elkaar (HTTP 405). De app zoekt en vult de winkelmand nu veel trager en onregelmatiger, bewaart zoekresultaten enkele dagen, en zoekt alleen nog in het assortiment van je eigen winkel.
+- Bij een blokkade stopt de app netjes: wat gevonden is blijft bewaard, de app blijft 30 minuten weg (bij herhaling langer) en toont "Collect&Go pauzeert" in plaats van "Laatste taak mislukt".
+- Betere productkeuze: AI bepaalt eerst de zoekterm, krijgt meer kandidaten te zien, kiest in kleinere groepen en mag erover nadenken. Vers boven blik of beleg, en geen product dat het ingrediënt alleen maar bevat.
+- Vindt de eerste zoekterm niets bruikbaars, dan wordt een tweede geprobeerd.
+- Nieuwe knop "Alles opnieuw zoeken". De keuzes die de vorige versie zelf maakte worden bij deze update eenmalig gewist; je eigen keuzes blijven.
+
 ## 0.5.1
 - AI: het model dacht eerst na en gebruikte daarmee de hele antwoordruimte op, zodat er geen antwoord meer kwam ("geen JSON in het AI-antwoord", "AI-antwoord is geen lijst"). Nadenken staat nu uit voor deze taken; een model dat dat niet toelaat krijgt extra ruimte.
 - Een afgekapt AI-antwoord wordt als zodanig gemeld in het logboek.

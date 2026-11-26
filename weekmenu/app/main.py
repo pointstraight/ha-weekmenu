@@ -23,7 +23,7 @@ from crawler import BASE, Crawler
 from db import DB, TAGS, now_iso
 from recipe_parser import PARSER_VERSION
 
-VERSION = "0.5.1"
+VERSION = "0.5.2"
 PORT = int(os.environ.get("WEEKMENU_PORT", "8099"))
 DISPLAY_PORT = int(os.environ.get("WEEKMENU_DISPLAY_PORT", "8100"))   # read-only family display
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
@@ -35,11 +35,12 @@ class App:
     def __init__(self, db=None):
         self.db = db or DB()
         self.crawler = Crawler(self.db)
-        self.job = {"running": False, "kind": None, "started": None, "finished": None, "error": None, "progress": {}}
+        self.job = {"running": False, "kind": None, "started": None, "finished": None, "error": None, "notice": None, "progress": {}}
         self.job_lock = threading.Lock()
         self.stop = threading.Event()
         self.shutdown = threading.Event()
         self._pool_cache = (None, None)
+        matching.upgrade(self.db)
 
     # -- small key/value store next to the settings -------------------------
     def kv_get(self, key, default=None):
@@ -59,7 +60,7 @@ class App:
             if self.job["running"]:
                 return False
             self.stop.clear()
-            self.job.update(running=True, kind=kind, started=now_iso(), finished=None, error=None,
+            self.job.update(running=True, kind=kind, started=now_iso(), finished=None, error=None, notice=None,
                             progress={"step": "start"})
         threading.Thread(target=self._run_job, args=(kind, kw), daemon=True).start()
         return True
@@ -93,6 +94,10 @@ class App:
             if kind in ("generate", "weekly") and not self.stop.is_set():
                 prog["step"] = "menu samenstellen"
                 selector.generate(self.db, start=kw.get("start"), use_ai=kw.get("use_ai"))
+        except colruyt.RateLimited as e:
+            # not a failure of the app: the shop asks for a pause, and what was done so far is kept
+            self.job["notice"] = str(e)
+            self.db.log(f"Taak '{kind}' onderbroken: {e}", "warning")
         except Exception as e:
             self.job["error"] = f"{type(e).__name__}: {e}"
             self.db.log(f"Taak '{kind}' mislukt: {self.job['error']}", "error")

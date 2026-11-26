@@ -42,7 +42,9 @@ function renderJob() {
     const p = j.progress || {};
     el.className = "pill busy"; el.hidden = false;
     el.textContent = "Bezig: " + (p.step || j.kind) + (p.total ? ` ${p.done}/${p.total}` : "");
-  } else if (j.error) { el.className = "pill error"; el.hidden = false; el.textContent = "Laatste taak mislukt"; }
+    el.title = "";
+  } else if (j.error) { el.className = "pill error"; el.hidden = false; el.textContent = "Laatste taak mislukt"; el.title = j.error + " (details op het tabblad Status)"; }
+  else if (j.notice) { el.className = "pill busy"; el.hidden = false; el.textContent = "Collect&Go pauzeert"; el.title = j.notice; }
   else el.hidden = true;
 }
 function render() {
@@ -150,12 +152,16 @@ function colruytBar(m, busy) {
   const c = S.colruyt, t = m.shopping.colruyt || {};
   if (!c.connected) return `<div class="cgbar"><span class="muted">Verbind met Collect&amp;Go op het tabblad Colruyt om deze lijst aan producten te koppelen en in je winkelmand te zetten.</span></div>`;
   if (c.ok === false) return `<div class="cgbar"><span class="bad">De Collect&amp;Go-sessie is verlopen. Verbind opnieuw op het tabblad Colruyt.</span></div>`;
-  const left = t.matched - t.added;
+  const left = t.matched - t.added, blocked = c.blocked_minutes > 0;
+  if (blocked) busy = true;
+  const pause = blocked ? `<p class="bad" style="margin:8px 0 0">Collect&amp;Go blokkeert de app tijdelijk omdat er te veel verzoeken na elkaar kwamen. Zoeken en toevoegen kan opnieuw over ongeveer ${c.blocked_minutes} minuten. Wat al gevonden is, blijft bewaard.</p>` : "";
   const summary = t.searched ? `<b>${t.matched} van ${t.open}</b> gekoppeld aan een Colruyt-product${t.estimate ? `, geschat ${euro(t.estimate)}` : ""}${t.added ? `, ${t.added} al in je winkelmand` : ""}` : "Nog geen Colruyt-producten gezocht voor deze lijst.";
   return `<div class="cgbar"><span>${summary}</span><span class="row">
     <button class="btn" data-cgjob="match" data-start="${m.start}" ${busy ? "disabled" : ""}>${t.searched ? "Zoek ontbrekende producten" : "Zoek producten bij Colruyt"}</button>
     ${t.searched ? `<button class="btn primary" data-cgjob="fill" data-start="${m.start}" ${busy || left <= 0 ? "disabled" : ""}>Zet ${left > 0 ? left + " " : ""}in winkelmand</button>` : ""}
-    ${t.added ? `<a class="btn" href="https://www.collectandgo.be" target="_blank" rel="noopener">Open Collect&amp;Go</a>` : ""}</span></div>
+    ${t.added ? `<a class="btn" href="https://www.collectandgo.be" target="_blank" rel="noopener">Open Collect&amp;Go</a>` : ""}
+    ${t.searched ? `<button class="btn small" data-cgjob="match" data-force="1" data-start="${m.start}" title="Zoekt alle producten opnieuw, behalve wat je zelf koos en wat al in je winkelmand zit" ${busy ? "disabled" : ""}>Alles opnieuw zoeken</button>` : ""}</span></div>
+    ${pause}
     ${t.searched ? `<p class="muted" style="margin:8px 0 0">Controleer de keuzes hieronder: kies een ander product of pas het aantal verpakkingen aan. Je keuzes worden onthouden voor volgende weken. Bestellen en betalen doe je zelf in Collect&amp;Go.</p>` : ""}`;
 }
 function renderShopping() {
@@ -202,6 +208,7 @@ function renderColruyt() {
         <tr><th>Account</th><td>${esc(c.account || "–")}</td></tr>
         <tr><th>Verbonden sinds</th><td>${fmtTs(c.saved_at)}</td></tr>
         <tr><th>Laatst gecontroleerd</th><td>${fmtTs(c.checked_at)}${c.message ? " · " + esc(c.message) : ""}</td></tr>
+        ${c.blocked_minutes > 0 ? `<tr><th>Pauze</th><td class="bad">Collect&amp;Go blokkeert de app tijdelijk; nieuwe poging over ongeveer ${c.blocked_minutes} minuten</td></tr>` : ""}
         <tr><th>Winkel</th><td>${c.store_known ? "bekend uit je sessie" : "niet gevonden in wat je plakte; plak het volledige cURL-commando zodat ook je winkel mee komt"}</td></tr></tbody></table>
       <h3>Testen</h3>
       <div class="row"><button class="btn" data-cgtest="read">Lees winkelmand</button>
@@ -371,7 +378,7 @@ document.addEventListener("click", (e) => {
   if (t.id === "cgcopy") return navigator.clipboard.writeText($("#cgdebug").textContent).then(() => toast("Details gekopieerd"), () => toast("Kopiëren lukt hier niet; selecteer de tekst"));
   if (t.id === "cgdisconnect") { cgResult = null; return cgAct(() => api("api/colruyt/disconnect", {}), "Verbinding verbroken"); }
   if (d.cgtest) { t.disabled = true; t.textContent = "Bezig…"; return cgAct(() => api("api/colruyt/test", { mode: d.cgtest, query: ($("#cgq") || {}).value || "melk" })); }
-  if (d.cgjob) return act(() => api("api/job", { kind: d.cgjob, start: d.start }), d.cgjob === "match" ? "Producten worden gezocht; dit duurt enkele seconden per product" : "Producten worden in je winkelmand gezet");
+  if (d.cgjob) return act(() => api("api/job", { kind: d.cgjob, start: d.start, force: d.force === "1" }), d.cgjob === "match" ? "Producten worden gezocht. Dat gaat bewust traag, ongeveer 8 seconden per product, zodat Collect&Go de app niet blokkeert." : "Producten worden in je winkelmand gezet");
   if (d.tidy) return act(() => api("api/job", { kind: "tidy", start: d.tidy }), "Lijst wordt opgeschoond");
   if (t.id === "shopdetails") { shopDetails = !shopDetails; return renderShopping(); }
   if (t.id === "toggleings") {

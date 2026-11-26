@@ -10,6 +10,7 @@ project oelegeirnaert/ha-collect-and-go (see README, "Credits").
 """
 import json
 import os
+import random
 import re
 import threading
 import time
@@ -32,10 +33,28 @@ USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Ge
 AUTH_PREFIX = "WC_AUTHENTICATION_"
 KEEP_PREFIXES = (AUTH_PREFIX, "WC_USERACTIVITY_")
 KEEP_EXACT = {"WC_ACTIVEPOINTER", "WC_SESSION_ESTABLISHED", "COL_SHOP", "priceMode"}
-MIN_INTERVAL = 2.0                                     # seconds between calls: the site rate-limits bursts
+MIN_INTERVAL = 2.0                                     # seconds between calls for a single action from the UI
+BULK_INTERVAL = (6.0, 9.0)                             # between calls of a long job: ~100 calls at 2 s got the app blocked
+BLOCK_MINUTES = (30, 60, 120)                          # how long the app stays away after the shop's bot protection answers
 
 _pace_lock = threading.Lock()
 _last_call = [0.0]
+_block = {}                                            # per service ("search", "cart", "orders"): {"until", "count"}
+
+
+def _service(url):
+    return "search" if url.startswith(SEARCH) else "cart" if url.startswith(CART) else "orders"
+
+
+def blocked_minutes(service=None):
+    """Minutes the app still keeps away from Collect&Go (or one of its services) after being blocked; 0 when free."""
+    until = max((b["until"] for name, b in _block.items() if service in (None, name)), default=0.0)
+    left = until - time.time()
+    return int(left // 60) + 1 if left > 0 else 0
+
+
+def clear_block():
+    _block.clear()
 
 
 class ColruytError(Exception):
@@ -127,7 +146,8 @@ def status(db):
     auth = next((k for k in cookies if k.startswith(AUTH_PREFIX)), "")
     return {"connected": bool(cookies), "ok": data.get("ok"), "message": data.get("message"),
             "saved_at": data.get("saved_at"), "checked_at": data.get("checked_at"),
-            "account": ("…" + auth[-4:]) if auth else None, "store_known": "COL_SHOP" in cookies}
+            "account": ("…" + auth[-4:]) if auth else None, "store_known": "COL_SHOP" in cookies,
+            "blocked_minutes": blocked_minutes()}
 
 
 def disconnect(db):
@@ -153,10 +173,15 @@ class Client:
         shop = self.cookies.get("COL_SHOP", "")
         tail = shop.rsplit("_", 1)[-1] if "_" in shop else ""
         self.catalog = tail if tail.isdigit() else CATALOG_ID      # the cart lives under the store's own catalogue
+        self.bulk = False                                          # long jobs set this: slower, irregular pace
 
     def _call(self, method, url, params=None, body=None):
+        service = _service(url)
+        if blocked_minutes(service):
+            raise RateLimited(f"Collect&Go blokkeert de app tijdelijk. De app wacht nog ongeveer {blocked_minutes(service)} minuten voor ze het opnieuw probeert.")
         with _pace_lock:
-            wait = _last_call[0] + (0 if os.environ.get("WEEKMENU_FAST") else MIN_INTERVAL) - time.monotonic()
+            gap = 0 if os.environ.get("WEEKMENU_FAST") else random.uniform(*BULK_INTERVAL) if self.bulk else MIN_INTERVAL
+            wait = _last_call[0] + gap - time.monotonic()
             if wait > 0:
                 time.sleep(wait)
             _last_call[0] = time.monotonic()
@@ -173,15 +198,19 @@ class Client:
             if e.code in (401, 403):
                 raise SessionExpired("Collect&Go weigert de sessie: log opnieuw in en verbind opnieuw.") from None
             if e.code in (405, 429, 456):
-                if e.code == 405:
-                    raise RateLimited("Collect&Go staat dit verzoek niet toe (HTTP 405): tijdelijk geblokkeerd of niet de juiste aanroep.") from None
-                raise RateLimited(f"Collect&Go vraagt om te vertragen (HTTP {e.code}). Probeer het over enkele minuten opnieuw.") from None
+                # the shop's bot protection: every further call only prolongs it, so stay away for a while
+                count = _block.get(service, {}).get("count", 0)
+                minutes = BLOCK_MINUTES[min(count, len(BLOCK_MINUTES) - 1)]
+                _block[service] = {"until": time.time() + minutes * 60, "count": count + 1}
+                raise RateLimited(f"Collect&Go blokkeert de app tijdelijk (HTTP {e.code}): te veel verzoeken na elkaar. "
+                                  f"De app wacht {minutes} minuten voor ze het opnieuw probeert.") from None
             reason = _error_text(e)
             err = ColruytError(f"Collect&Go weigert dit verzoek (HTTP {e.code})" + (f": {reason}" if reason else "."))
             err.status, err.reason = e.code, reason
             raise err from None
         except (urllib.error.URLError, TimeoutError, OSError) as e:
             raise ColruytError(f"Collect&Go niet bereikbaar: {e}") from None
+        _block.pop(service, None)
         if not text.strip():
             return {}
         try:
@@ -190,7 +219,9 @@ class Client:
             raise ColruytError("Collect&Go gaf geen bruikbaar antwoord (mogelijk botbeveiliging).") from None
 
     # -- products -------------------------------------------------------------
-    def search(self, term, size=12):
+    def search(self, term, size=12, general_on_empty=True):
+        """Products for a search term, from the store's own catalogue. The general catalogue is the
+        fallback when the store's one fails, and (unless switched off) when it has nothing."""
         url = f"{SEARCH}/productview/bySearchTerm/{urllib.parse.quote(term, safe='')}"
         found, self.search_catalog = [], self.catalog
         if self.catalog != CATALOG_ID:
@@ -200,7 +231,9 @@ class Client:
             except (SessionExpired, RateLimited):
                 raise
             except ColruytError:
-                found = []
+                found, general_on_empty = [], True
+            if not found and not general_on_empty:
+                return []
         if not found:
             self.search_catalog = CATALOG_ID
             data = self._call("GET", url, {"langId": LANG_ID, "catalogId": CATALOG_ID, "pageSize": size})
@@ -395,6 +428,7 @@ def connect(db, pasted):
         raise ColruytError("Geen Collect&Go-sessie gevonden in wat je plakte. Kopieer een verzoek naar collectandgo.be "
                            "als cURL, of de cookie die begint met WC_AUTHENTICATION_.")
     _save(db, {"cookies": cookies, "saved_at": now_iso(), "ok": None, "message": None})
+    clear_block()                                    # a fresh login is the user's own request to try again
     return check(db)
 
 

@@ -113,13 +113,24 @@ wanneer je opnieuw moet verbinden.
 Op het tabblad **Boodschappen** verschijnt, zodra de koppeling werkt, een blok voor Colruyt:
 
 1. **Zoek producten bij Colruyt** zoekt voor elke lijn een product in het assortiment van jouw winkel
-   en stelt een aantal verpakkingen voor. Dat duurt enkele seconden per product, omdat de app de
-   winkel niet mag overbelasten. Producten die je al eens koos worden zonder zoeken hergebruikt.
+   en stelt een aantal verpakkingen voor. Dat gaat bewust traag, ongeveer 8 seconden per product
+   (een volle lijst duurt 10 tot 15 minuten), omdat Collect&Go een app blokkeert die te snel vraagt.
+   Producten die al eens gekozen zijn worden zonder zoeken hergebruikt, dus latere weken gaan sneller.
+   Met een API-sleutel bepaalt AI eerst de zoekterm ("eierdooiers" wordt "eieren") en kiest ze daarna
+   het product dat echt het ingrediënt is.
 2. Controleer de keuzes: kies een ander product uit de lijst, pas het aantal aan, of kies
    "Niet via Colruyt kopen". Je keuzes worden onthouden voor volgende weken.
 3. **Zet in winkelmand** plaatst alles wat gekoppeld en niet afgevinkt is in je Collect&Go-winkelmand.
    Wat al toegevoegd is, wordt niet nog eens toegevoegd. Weigert Collect&Go een product, dan staat
    de reden bij die lijn en kies je een ander.
+
+**Alles opnieuw zoeken** doet het zoekwerk over voor alle lijnen, behalve voor wat je zelf koos en
+wat al in je winkelmand zit.
+
+Blokkeert Collect&Go de app toch (melding "Collect&Go pauzeert"), dan blijft bewaard wat al
+gevonden is en wacht de app 30 minuten (bij herhaling 60 en 120) voor ze het opnieuw probeert.
+Klik daarna op **Zoek ontbrekende producten** om verder te gaan. Opnieuw klikken tijdens de pauze
+heeft geen zin en bereikt Collect&Go ook niet.
 
 Daarna open je Collect&Go, kijk je de winkelmand na, kies je een afhaalmoment en betaal je.
 De geschatte prijs is de som van de getoonde prijzen en kan afwijken van wat Collect&Go aanrekent.

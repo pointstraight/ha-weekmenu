@@ -52,13 +52,14 @@ def _post(payload):
         raise RuntimeError(f"AI-oproep mislukt (HTTP {e.code}): {e.read().decode(errors='replace')[:300]}") from e
 
 
-def call(db, purpose, system, user, max_tokens=1500):
-    """One Messages API call; returns the text. Raises on failure or a cut-off answer."""
+def call(db, purpose, system, user, max_tokens=1500, think=False):
+    """One Messages API call; returns the text. Raises on failure or a cut-off answer.
+    think=True lets the model reason first (its default), for the jobs where judgement matters."""
     m = model()
     payload = {"model": m, "max_tokens": max_tokens, "system": system,
                "messages": [{"role": "user", "content": user}]}
     data = None
-    if m not in _keeps_thinking:
+    if not think and m not in _keeps_thinking:
         try:
             data = _post(dict(payload, thinking={"type": "disabled"}))
         except RuntimeError as e:

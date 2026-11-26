@@ -8,7 +8,9 @@ import random
 import sys
 import tempfile
 import threading
+import time
 import unittest
+from urllib.parse import unquote
 from datetime import date, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -334,7 +336,14 @@ class MockAI(BaseHTTPRequestHandler):
                                     "usage": {"input_tokens": 1234, "output_tokens": req["max_tokens"]}})
         MockAI.calls.append((self.headers.get("x-api-key"), req["model"]))
         user = req["messages"][0]["content"]
-        if "match lines" in req["system"]:
+        if "search box" in req["system"]:
+            out = []
+            for m in re.finditer(r"^(\d+)\. (.*)$", user, re.M):
+                name = m.group(2).strip().lower()
+                # parsley is not found under its own name in the stand-in shop; the second term is
+                out.append({"id": int(m.group(1)), "terms": ["bladpeterselie", "verse kruiden"] if "peterselie" in name else [name]})
+            out.append({"id": 999, "terms": ["bestaat niet"]})          # unknown id: ignored
+        elif "match lines" in req["system"]:
             ids = [int(m.group(1)) for m in re.finditer(r"^(\d+)\. ", user, re.M)]
             out = [{"id": i, "pick": 1, "qty": 2} for i in ids]
             if out:
@@ -694,6 +703,7 @@ class MockCollectAndGo(BaseHTTPRequestHandler):
     refuse = set()               # product ids the shop refuses to add (HTTP 400 with its own error text)
     store_search = "ok"          # ok | empty | error: how a search in the store's own catalogue behaves
     answer_with_id = True        # the real shop answers a cart POST with the new orderItemId
+    block_after = None           # after this many searches the bot protection answers 405 to every search
     line_shape = "real"          # real: line carries its own article number, not the product's uniqueID
     TOKEN = "1234567%2CsecretTOKENvalue"
 
@@ -724,6 +734,9 @@ class MockCollectAndGo(BaseHTTPRequestHandler):
             return self._reply(456)
         if "/productview/bySearchTerm/" in u.path:
             term = unquote(u.path.rsplit("/", 1)[-1])
+            done = len([x for x in MockCollectAndGo.seen if "bySearchTerm" in x[1]]) - 1
+            if self.block_after is not None and done >= self.block_after:
+                return self._reply(405)
             if q.get("catalogId") == "10646" and self.store_search != "ok":
                 return self._reply(200, {"catalogEntryView": []}) if self.store_search == "empty" else self._reply(400, {"errors": [{"errorKey": "_ERR_CATALOG"}]})
             if "peterselie" in term.lower():
@@ -806,6 +819,8 @@ class ColruytTests(unittest.TestCase):
         self._old = (colruyt.CART, colruyt.SEARCH, colruyt.ORDERS)
         colruyt.CART, colruyt.SEARCH, colruyt.ORDERS = base + "/cartsvc/store/90004", base + "/searchsvc/store/90004", base + "/ordersvc/store/90004"
         MockCollectAndGo.cart, MockCollectAndGo.seen, MockCollectAndGo.mode = [], [], "ok"
+        MockCollectAndGo.block_after = None
+        colruyt.clear_block()
         MockCollectAndGo.answer_with_id, MockCollectAndGo.line_shape = True, "real"
         MockCollectAndGo.refuse, MockCollectAndGo.store_search, MockCollectAndGo.put_delete = set(), "ok", "ok"
         self.db = DB(os.path.join(tempfile.mkdtemp(), "c.db"))
@@ -953,8 +968,35 @@ class ColruytTests(unittest.TestCase):
         MockCollectAndGo.mode = "throttle_all"
         st = self.c.check(self.db)
         self.assertIsNone(st["ok"])                                                            # unknown, not "expired"
-        self.assertIn("vertragen", st["message"])
+        self.assertIn("blokkeert", st["message"])
         self.assertFalse(self.c.test(self.db, "read")["steps"][0]["ok"])
+
+    def test_after_a_block_the_app_stays_away_from_that_service(self):
+        self.c.connect(self.db, self.GOOD)
+        client = self.c.client(self.db)
+        MockCollectAndGo.seen.clear()
+        MockCollectAndGo.block_after = 2
+        client.search("melk", 3)
+        client.search("boter", 3)
+        with self.assertRaisesRegex(self.c.RateLimited, "30 minuten"):
+            client.search("kaas", 3)
+        calls = len(MockCollectAndGo.seen)
+        MockCollectAndGo.block_after = None                       # the shop would answer again, but the app waits
+        with self.assertRaisesRegex(self.c.RateLimited, "wacht nog ongeveer 30 minuten"):
+            client.search("kaas", 3)
+        self.assertEqual(len(MockCollectAndGo.seen), calls)       # no call was made
+        self.assertEqual(self.c.status(self.db)["blocked_minutes"], 30)
+        self.assertEqual(self.c.blocked_minutes("cart"), 0)       # other services are not held back
+        self.assertFalse(client.cart()["readable"])
+        self.c._block["search"]["until"] = time.time() - 1        # the pause is over
+        self.assertEqual(len(client.search("kaas", 3)), 3)
+        self.assertEqual(self.c.status(self.db)["blocked_minutes"], 0)
+        MockCollectAndGo.block_after = 0
+        with self.assertRaisesRegex(self.c.RateLimited, "30 minuten"):
+            client.search("kaas", 3)
+        self.c._block["search"]["until"] = time.time() - 1
+        with self.assertRaisesRegex(self.c.RateLimited, "60 minuten"):   # blocked again straight away: wait longer
+            client.search("kaas", 3)
 
     def test_daily_check_runs_once_a_day(self):
         from main import App
@@ -1070,6 +1112,8 @@ class MatchingTests(unittest.TestCase):
         self._old = (colruyt.CART, colruyt.SEARCH, colruyt.ORDERS)
         colruyt.CART, colruyt.SEARCH, colruyt.ORDERS = base + "/cartsvc/store/90004", base + "/searchsvc/store/90004", base + "/ordersvc/store/90004"
         MockCollectAndGo.cart, MockCollectAndGo.seen, MockCollectAndGo.mode = [], [], "ok"
+        MockCollectAndGo.block_after = None
+        colruyt.clear_block()
         MockCollectAndGo.answer_with_id, MockCollectAndGo.line_shape = True, "real"
         MockCollectAndGo.refuse, MockCollectAndGo.store_search, MockCollectAndGo.put_delete = set(), "ok", "ok"
         self.db = DB(os.path.join(tempfile.mkdtemp(), "m.db"))
@@ -1125,13 +1169,71 @@ class MatchingTests(unittest.TestCase):
         self.assertEqual((totals["open"], totals["matched"], totals["added"]), (5, 4, 0))
         self.assertAlmostEqual(totals["estimate"], 5 * 1.29 + 3 * 1.29, 2)
         searches = [x for x in MockCollectAndGo.seen if "bySearchTerm" in x[1]]
-        self.assertEqual(len(searches), 6)                                            # 5 lines; the one without results is tried in both catalogues
+        self.assertEqual(len(searches), 5)                                            # one search per line, in the store's own catalogue only
+        self.assertTrue(all(x[2]["catalogId"] == "10646" for x in searches), searches)
         # a rebuilt list (or next week's menu) reuses the remembered products without searching again
         self.db.x("DELETE FROM shopping_matches")
         MockCollectAndGo.seen.clear()
         summary = self.run_match()
         self.assertEqual((summary["remembered"], summary["chosen"]), (4, 0))
-        self.assertEqual(len([x for x in MockCollectAndGo.seen if "bySearchTerm" in x[1]]), 2)   # only the one never found (both catalogues)
+        self.assertEqual([x for x in MockCollectAndGo.seen if "bySearchTerm" in x[1]], [])        # the one never found is answered from the cache
+        self.db.x("UPDATE search_cache SET at=at-4*86400")                                        # days later the shop is asked again
+        self.run_match()
+        self.assertEqual(len([x for x in MockCollectAndGo.seen if "bySearchTerm" in x[1]]), 1)
+
+    def test_block_during_search_keeps_what_was_found(self):
+        MockCollectAndGo.seen.clear()
+        MockCollectAndGo.block_after = 3
+        with self.assertRaisesRegex(self.c.RateLimited, "3 producten zijn gezocht, 2 nog niet"):
+            self.run_match()
+        by_name, totals = self.lines()
+        found = len([i for i in by_name.values() if i["match"]])
+        self.assertEqual((found, len(by_name) - found), (3, 2))
+        calls = len(MockCollectAndGo.seen)
+        with self.assertRaises(self.c.RateLimited):                                    # pressing the button again does not reach the shop
+            self.run_match()
+        self.assertEqual(len(MockCollectAndGo.seen), calls)
+        self.assertEqual(self.lines()[1]["matched"], totals["matched"])                # and loses nothing
+        MockCollectAndGo.block_after = None
+        self.c.clear_block()
+        self.run_match()                                                               # later: only the rest is asked from the shop
+        self.assertEqual(len(MockCollectAndGo.seen), calls + 2)
+        self.assertEqual(len([i for i in self.lines()[0].values() if i["match"]]), 5)
+
+    def test_redo_all_and_upgrade_keep_only_the_users_own_choices(self):
+        self.run_match()
+        by_name, _ = self.lines()
+        mine, auto = by_name["gemengd gehakt"], by_name["room"]
+        self.m.set_choice(self.db, self.start, mine["key"], mine["match"]["candidates"][2]["entry_id"], 2)
+        self.db.x("UPDATE search_cache SET data=replace(data, 'Room 0', 'Verse room 0')")      # the shop now has a better answer
+        self.run_match()                                                                        # the normal button keeps every choice
+        self.assertEqual(self.lines()[0]["room"]["match"]["product"]["name"], auto["match"]["product"]["name"])
+        self.run_match(force=True)                                                              # "search everything again"
+        by_name, _ = self.lines()
+        self.assertTrue(by_name["room"]["match"]["product"]["name"].startswith("Verse room 0"))
+        self.assertEqual((by_name["gemengd gehakt"]["match"]["by"], by_name["gemengd gehakt"]["match"]["qty"]), ("jij", 2))
+        # an update that chooses better starts from a clean slate, except for the user's choices
+        self.db.x("DELETE FROM settings WHERE key='_matcher'")
+        self.assertEqual(self.m.upgrade(self.db), 4)
+        by_name, totals = self.lines()
+        self.assertEqual(totals["matched"], 1)
+        self.assertEqual(by_name["gemengd gehakt"]["match"]["by"], "jij")
+        self.assertEqual([r["chosen_by"] for r in self.db.q("SELECT chosen_by FROM product_map")], ["jij"])
+        self.assertEqual(self.m.upgrade(self.db), 0)                                            # only once
+
+    def test_a_block_is_a_pause_not_a_failed_job(self):
+        from main import App
+        app = App(self.db)
+        MockCollectAndGo.seen.clear()
+        MockCollectAndGo.block_after = 1
+        self.assertTrue(app.start_job("match", start=self.start))
+        for _ in range(100):
+            if not app.job["running"]:
+                break
+            time.sleep(0.05)
+        self.assertIsNone(app.job["error"])
+        self.assertIn("blokkeert", app.job["notice"])
+        self.assertGreater(app.state()["colruyt"]["blocked_minutes"], 0)
 
     def test_user_choice_is_kept_and_remembered(self):
         self.run_match()
@@ -1182,15 +1284,29 @@ class MatchingTests(unittest.TestCase):
         os.environ["ANTHROPIC_API_KEY"] = "test-key"
         self.db.save_settings({"ai_matching": True, "brand_preference": "huismerk"})
         try:
+            MockAI.requests.clear()
+            MockCollectAndGo.seen.clear()
             summary = self.run_match()
-            by = [i["match"] for i in self.m.items_of(self.db, self.start) if self.m.view(self.db, self.start, [i]) and i.get("match")]
+            by_name, _ = self.lines()
+            by = [i["match"] for i in by_name.values()]
             how = sorted(m["by"] for m in by)
-            self.assertEqual(how.count("AI"), 3)                     # two picks and one "none of these"
+            self.assertEqual(how.count("AI"), 4)                     # three picks and one "none of these"
             self.assertEqual(how.count("regel"), 1)                  # the out-of-range pick fell back to the rule
-            self.assertEqual(summary["none"], 2)                     # the AI's null plus the line without search results
+            self.assertEqual(summary["none"], 1)                     # only the AI's null
             ai_matched = [m for m in by if m["by"] == "AI" and m["status"] == "matched"]
             self.assertTrue(all(m["qty"] == 2 and m["product"]["name"].split()[-2] == "1" for m in ai_matched), ai_matched)
-            self.assertEqual(self.db.one("SELECT COUNT(*) AS n FROM ai_usage WHERE purpose='matching'")["n"], 1)
+            # the shop does not know parsley under its own name: the AI's second search term found it
+            self.assertEqual(by_name["peterselie"]["match"]["status"], "matched")
+            self.assertTrue(by_name["peterselie"]["match"]["product"]["name"].startswith("Verse kruiden"))
+            terms = [unquote(x[1].rsplit("/", 1)[-1]) for x in MockCollectAndGo.seen if "bySearchTerm" in x[1]]
+            self.assertIn("bladpeterselie", terms)
+            self.assertNotIn("Peterselie", terms)                    # the list's own name was not needed
+            self.assertEqual(len(terms), 6)
+            # one call for the search terms (no thinking), one for the picks (the model may reason there)
+            self.assertEqual(self.db.one("SELECT COUNT(*) AS n FROM ai_usage WHERE purpose='matching'")["n"], 2)
+            self.assertEqual(MockAI.requests[0].get("thinking"), {"type": "disabled"})
+            self.assertNotIn("thinking", MockAI.requests[1])
+            self.assertGreater(MockAI.requests[1]["max_tokens"], 10000)
         finally:
             ai.API_URL = old_url
             os.environ.pop("ANTHROPIC_API_KEY", None)

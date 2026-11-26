@@ -87,6 +87,7 @@ CREATE TABLE IF NOT EXISTS shopping_checks(start TEXT, key TEXT, PRIMARY KEY(sta
 CREATE TABLE IF NOT EXISTS shopping_ai(start TEXT PRIMARY KEY, signature TEXT, data TEXT, created_at TEXT);
 CREATE TABLE IF NOT EXISTS shopping_matches(start TEXT, key TEXT, data TEXT, PRIMARY KEY(start, key));
 CREATE TABLE IF NOT EXISTS product_map(key TEXT PRIMARY KEY, data TEXT, chosen_by TEXT, updated_at TEXT);
+CREATE TABLE IF NOT EXISTS search_cache(term TEXT, catalog TEXT, data TEXT, at REAL, PRIMARY KEY(term, catalog));
 CREATE TABLE IF NOT EXISTS ai_usage(
   id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, purpose TEXT, model TEXT,
   input_tokens INTEGER, output_tokens INTEGER);
