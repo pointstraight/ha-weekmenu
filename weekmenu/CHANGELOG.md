@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.2
+- De app heet in de zijbalk nu "Weekmenu beheer" (eigen icoon), zodat ze niet verward wordt met een dashboard "Weekmenu" voor het gezin.
+- Handleiding: dashboard met de gezinsweergave op volledige hoogte.
+
 ## 0.4.1
 - Collect&Go-test: het testproduct wordt nu teruggevonden en weer verwijderd, ook als het al in de winkelmand stond (dan wordt het aantal teruggezet).
 - Technische details van de test zijn te kopiëren.

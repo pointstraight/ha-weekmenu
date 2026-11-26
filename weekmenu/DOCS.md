@@ -38,8 +38,20 @@ url: http://192.168.x.x:8100/
 aspect_ratio: 16:10
 ```
 
-  Voor een tablet aan de muur werkt een aparte dashboardweergave van het type "Paneel" met alleen
-  deze kaart het best. Voeg `?theme=dark` of `?theme=light` toe aan het adres om het thema vast te
+  Als eigen dashboard in de zijbalk: maak onder Instellingen → Dashboards een nieuw dashboard
+  "Weekmenu" met één weergave van het type "Paneel" en deze kaart. Met card-mod (HACS) vult de
+  pagina de volledige hoogte:
+
+  ```yaml
+  type: iframe
+  url: http://192.168.x.x:8100/
+  card_mod:
+    style: |
+      ha-card { border: 0; box-shadow: none; border-radius: 0; background: none; }
+      #root { padding-top: 0 !important; height: calc(100vh - var(--header-height, 56px)); }
+  ```
+
+  De app zelf staat in de zijbalk als "Weekmenu beheer". Voeg `?theme=dark` of `?theme=light` toe aan het adres om het thema vast te
   zetten; anders volgt de pagina het toestel.
 - Poort 8100 staat bij de app onder Configuratie → Netwerk. Ze is alleen binnen je thuisnetwerk
   bereikbaar en je kunt ze daar uitschakelen. Open je Home Assistant via https, dan blokkeert de
