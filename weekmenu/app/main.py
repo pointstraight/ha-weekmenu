@@ -16,13 +16,14 @@ from urllib.parse import parse_qs, urlparse
 import ai
 import colruyt
 import ha
+import matching
 import selector
 import shopping
 from crawler import BASE, Crawler
 from db import DB, TAGS, now_iso
 from recipe_parser import PARSER_VERSION
 
-VERSION = "0.4.5"
+VERSION = "0.5.0"
 PORT = int(os.environ.get("WEEKMENU_PORT", "8099"))
 DISPLAY_PORT = int(os.environ.get("WEEKMENU_DISPLAY_PORT", "8100"))   # read-only family display
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
@@ -83,6 +84,12 @@ class App:
             if kind == "tidy":
                 prog["step"] = "boodschappenlijst opschonen (AI)"
                 shopping.tidy(self.db, kw["start"])
+            if kind == "match":
+                prog["step"] = "producten zoeken bij Colruyt"
+                matching.match_menu(self.db, kw["start"], prog, self.stop, force=bool(kw.get("force")))
+            if kind == "fill":
+                prog["step"] = "winkelmand vullen"
+                matching.fill_cart(self.db, kw["start"], prog, self.stop)
             if kind in ("generate", "weekly") and not self.stop.is_set():
                 prog["step"] = "menu samenstellen"
                 selector.generate(self.db, start=kw.get("start"), use_ai=kw.get("use_ai"))
@@ -236,6 +243,8 @@ class App:
                         day["ingredients"] = shopping.recipe_lines(day["ingredients"], day.pop("serves", None), settings["persons"])
                 view["persons"] = settings["persons"]
                 view["shopping"] = shopping.build(self.db, start, settings)
+                view["shopping"]["colruyt"] = matching.view(
+                    self.db, start, [i for c in view["shopping"]["categories"] for i in c["items"]])
                 out.append(view)
         return out
 
@@ -355,13 +364,19 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {"ok": True})
             if path == "/api/job":
                 kind = body.get("kind")
-                if kind not in ("selftest", "update", "generate", "weekly", "tidy"):
+                if kind not in ("selftest", "update", "generate", "weekly", "tidy", "match", "fill"):
                     return self._send(400, {"error": "onbekende taak"})
                 kw = {}
                 if body.get("start"):
                     kw["start"] = date.fromisoformat(body["start"])
                 if "use_ai" in body:
                     kw["use_ai"] = bool(body["use_ai"])
+                if kind in ("match", "fill"):
+                    kw["force"] = bool(body.get("force"))
+                    if not kw.get("start"):
+                        return self._send(400, {"error": "geen menu gekozen"})
+                    if not colruyt.status(app.db)["connected"]:
+                        return self._send(400, {"error": "nog niet verbonden met Collect&Go (tabblad Colruyt)"})
                 if kind == "tidy" and not (kw.get("start") and ai.available()):
                     return self._send(400, {"error": "geen menu gekozen of geen API-sleutel ingesteld"})
                 if not app.start_job(kind, **kw):
@@ -395,6 +410,10 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/colruyt/disconnect":
                 colruyt.disconnect(app.db)
                 return self._send(200, {"ok": True})
+            if path == "/api/match":
+                matching.set_choice(app.db, date.fromisoformat(body["start"]), str(body["key"]), body.get("entry_id"),
+                                    body.get("qty", 1), bool(body.get("skip")))
+                return self._send(200, {"ok": True})
             if path == "/api/check":
                 shopping.set_checked(app.db, date.fromisoformat(body["start"]), str(body["key"]), bool(body.get("checked")))
                 ha.publish(app.db, app.job)
@@ -404,6 +423,7 @@ class Handler(BaseHTTPRequestHandler):
                 app.db.x("DELETE FROM menus WHERE start=?", (body["start"],))
                 app.db.x("DELETE FROM shopping_checks WHERE start=?", (body["start"],))
                 app.db.x("DELETE FROM shopping_ai WHERE start=?", (body["start"],))
+                app.db.x("DELETE FROM shopping_matches WHERE start=?", (body["start"],))
                 ha.publish(app.db, app.job)
                 return self._send(200, {"ok": True})
             if path == "/api/recipe":

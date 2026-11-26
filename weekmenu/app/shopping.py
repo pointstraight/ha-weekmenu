@@ -313,7 +313,7 @@ def _item(key, name, category, lines):
             parts[line["unit"] or ""] = parts.get(line["unit"] or "", 0) + line["base"]
     measured = {u: q for u, q in parts.items() if u not in VAGUE_UNITS}
     shown = measured or parts
-    return {"key": key, "name": name, "category": category, "amount": format_amount(shown),
+    return {"key": key, "name": name, "category": category, "amount": format_amount(shown), "parts": measured,
             "also_unmeasured": unquantified and bool(shown),
             "recipes": sorted({line["recipe"] for line in lines}), "lines": [line["raw"] for line in lines]}
 
@@ -344,7 +344,7 @@ def build(db, start, settings=None):
         (pantry if key in staples or merge_key(name) in staples else items).append(item)
     for extra in settings["weekly_extras"]:
         key = "extra:" + extra.lower()
-        items.append({"key": key, "name": extra[:1].upper() + extra[1:], "category": "Vaste producten", "amount": "",
+        items.append({"key": key, "name": extra[:1].upper() + extra[1:], "category": "Vaste producten", "amount": "", "parts": {},
                       "also_unmeasured": False, "recipes": [], "lines": [], "checked": key in checked})
     cats = []
     for cat in CATEGORIES:

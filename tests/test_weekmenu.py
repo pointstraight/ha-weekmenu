@@ -314,7 +314,14 @@ class MockAI(BaseHTTPRequestHandler):
         req = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         MockAI.calls.append((self.headers.get("x-api-key"), req["model"]))
         user = req["messages"][0]["content"]
-        if "shopping list" in req["system"]:
+        if "match lines" in req["system"]:
+            ids = [int(m.group(1)) for m in re.finditer(r"^(\d+)\. ", user, re.M)]
+            out = [{"id": i, "pick": 1, "qty": 2} for i in ids]
+            if out:
+                out[0]["pick"] = 99                       # out of range: that line must fall back to the rule
+            if len(out) > 1:
+                out[1]["pick"] = None                     # "none of these is the ingredient"
+        elif "shopping list" in req["system"]:
             groups = {}
             for m in re.finditer(r"^(\d+) \| ([^|]+) \|", user, re.M):
                 word = m.group(2).strip().lower().split()[-1]
@@ -671,9 +678,13 @@ class MockCollectAndGo(BaseHTTPRequestHandler):
             term = unquote(u.path.rsplit("/", 1)[-1])
             if q.get("catalogId") == "10646" and self.store_search != "ok":
                 return self._reply(200, {"catalogEntryView": []}) if self.store_search == "empty" else self._reply(400, {"errors": [{"errorKey": "_ERR_CATALOG"}]})
+            if "peterselie" in term.lower():
+                return self._reply(200, {"catalogEntryView": []})
+            base = 9000 + (sum(map(ord, term.lower())) % 50) * 20           # different products per search term
             return self._reply(200, {"catalogEntryView": [
-                {"uniqueID": f"{9000 + i}", "partNumber": f"{500 + i}-P", "name": f"{term.capitalize()} {i}", "manufacturer": "Boni",
-                 "content": "1 st", "buyable": True, "price": [{"usage": "Offer", "value": "9.99"}, {"usage": "Display", "value": f"{1 + i}.29"}]}
+                {"uniqueID": f"{base + i}", "partNumber": f"{500 + i}-P", "name": f"{term.capitalize()} {i} {250 * (i + 1)}g", "manufacturer": "Boni",
+                 "buyable": "true", "isProductAvailable": "Y", "isProductRanged": "Y",
+                 "xprice": [{"basePrice": f"{1 + i}.29", "currency": "EUR"}]}
                 for i in range(int(q.get("pageSize", 3)))]})
         if u.path.endswith("/cart/@self") and method == "GET":
             if q.get("catalogId") != "10646":
@@ -697,7 +708,7 @@ class MockCollectAndGo(BaseHTTPRequestHandler):
                 line_id = f"L{len(self.cart) + 1}"
                 part = f"ART{item['productId']}" if self.line_shape == "real" else item["productId"]
                 MockCollectAndGo.cart.append({"orderItemId": line_id, "partNumber": part, "quantity": item["quantity"],
-                                              "xitem_productName": "Citroenen 1kg", "xitem_BrandName": "BONI", "xitem_field2": item["xitem_field2"],
+                                              "xitem_productName": "BONI Citroenen 1kg", "xitem_BrandName": "BONI", "xitem_field2": item["xitem_field2"],
                                               "unitQuantity": "1.0", "_product": item["productId"]})
             return self._reply(201, {"orderId": "1", "orderItem": [{"orderItemId": line_id}]} if self.answer_with_id else {"orderId": "1"})
         if u.path.endswith("/update_order_item") and method == "PUT":
@@ -787,8 +798,8 @@ class ColruytTests(unittest.TestCase):
         self.assertTrue(all(s["ok"] for s in self.c.test(self.db, "read")["steps"]))
         found = self.c.test(self.db, "search", "melk")
         self.assertTrue(found["steps"][0]["ok"])
-        self.assertEqual((found["products"][0]["name"], found["products"][0]["brand"], found["products"][0]["price"]), ("Melk 0", "Boni", 1.29))
-        MockCollectAndGo.cart.append({"orderItemId": "L0", "partNumber": "9000", "quantity": "2", "productName": "Al in de mand", "_product": "9000"})
+        self.assertEqual((found["products"][0]["name"], found["products"][0]["brand"], found["products"][0]["price"]), ("Melk 0 250g", "Boni", 1.29))
+        MockCollectAndGo.cart.append({"orderItemId": "L0", "partNumber": "9120", "quantity": "2", "productName": "Al in de mand", "_product": "9120"})
         result = self.c.test(self.db, "write")
         self.assertEqual([s["ok"] for s in result["steps"]], [True, True, True, True], result)
         self.assertEqual([i["orderItemId"] for i in MockCollectAndGo.cart], ["L0"])          # own line untouched, test line gone
@@ -810,7 +821,7 @@ class ColruytTests(unittest.TestCase):
     def test_write_test_restores_quantity_when_the_product_was_already_in_the_cart(self):
         # a lemon left behind by an earlier, failed test: the line does not carry the product's id, so it is not recognised up front
         self.c.connect(self.db, self.GOOD)
-        MockCollectAndGo.cart[:] = [{"orderItemId": "OLD", "partNumber": "ART9000", "quantity": "1", "productName": "Citroen", "_product": "9000"}]
+        MockCollectAndGo.cart[:] = [{"orderItemId": "OLD", "partNumber": "ART9120", "quantity": "1", "productName": "Citroen", "_product": "9120"}]
         for with_id in (True, False):
             MockCollectAndGo.answer_with_id = with_id
             result = self.c.test(self.db, "write")
@@ -862,15 +873,15 @@ class ColruytTests(unittest.TestCase):
 
     def test_write_test_moves_on_when_the_shop_refuses_a_product(self):
         self.c.connect(self.db, self.GOOD)
-        MockCollectAndGo.refuse = {"9000", "9001"}
+        MockCollectAndGo.refuse = {"9120", "9121"}
         result = self.c.test(self.db, "write")
         self.assertEqual([s["ok"] for s in result["steps"]], [True, True, True, True], result)
         attempts = result["debug"]["attempts"]
-        self.assertEqual([a["entry_id"] for a in attempts], ["9000", "9001", "9002"])
+        self.assertEqual([a["entry_id"] for a in attempts], ["9120", "9121", "9122"])
         self.assertIn("_ERR_PROD_NOT_ORDERABLE Dit product kan niet besteld worden.", attempts[0]["result"])
         self.assertEqual(attempts[2]["result"], "aanvaard")
         self.assertEqual(MockCollectAndGo.cart, [])
-        MockCollectAndGo.refuse = {"9000", "9001", "9002", "9003"}                       # everything refused: clear failure, nothing left behind
+        MockCollectAndGo.refuse = {"9120", "9121", "9122", "9123"}                       # everything refused: clear failure, nothing left behind
         result = self.c.test(self.db, "write")
         self.assertEqual([s["ok"] for s in result["steps"]], [True, False], result)
         self.assertIn("weigerde alle 4", result["steps"][1]["detail"])
@@ -995,6 +1006,147 @@ class DisplayTests(unittest.TestCase):
         con.close()
         db = DB(path)
         self.assertEqual(db.one("SELECT name, description FROM recipes"), {"name": "Oud recept", "description": None})
+
+
+class MatchingTests(unittest.TestCase):
+    """Shopping list -> Colruyt products -> cart, against the stand-in shop."""
+
+    def setUp(self):
+        import colruyt
+        import matching
+        import shopping
+        self.c, self.m, self.shopping = colruyt, matching, shopping
+        self.srv = ThreadingHTTPServer(("127.0.0.1", 0), MockCollectAndGo)
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        base = f"http://127.0.0.1:{self.srv.server_address[1]}"
+        self._old = (colruyt.CART, colruyt.SEARCH, colruyt.ORDERS)
+        colruyt.CART, colruyt.SEARCH, colruyt.ORDERS = base + "/cartsvc/store/90004", base + "/searchsvc/store/90004", base + "/ordersvc/store/90004"
+        MockCollectAndGo.cart, MockCollectAndGo.seen, MockCollectAndGo.mode = [], [], "ok"
+        MockCollectAndGo.answer_with_id, MockCollectAndGo.line_shape = True, "real"
+        MockCollectAndGo.refuse, MockCollectAndGo.store_search, MockCollectAndGo.put_delete = set(), "ok", "ok"
+        self.db = DB(os.path.join(tempfile.mkdtemp(), "m.db"))
+        self.db.save_settings({"ai_matching": False})
+        colruyt.connect(self.db, ColruytTests.GOOD)
+        self.start = date(2026, 12, 1)
+        self.db.x("INSERT INTO menus(start, created_at, status, method, notes) VALUES(?,?,?,?,?)", (self.start.isoformat(), "x", "approved", "regels", "[]"))
+        recipes = {"a": ("Rigatoni", "4", ["800 g gemengd gehakt", "3 uien", "enkele takjes peterselie", "Zout", "4 dl room"]),
+                   "b": ("Stoofpot", "4", ["400 g gemengd gehakt", "2 wortels", "1 ui"])}
+        for i, (key, (name, serves, ings)) in enumerate(recipes.items()):
+            self.db.x("INSERT INTO recipes(url, slug, name, category, minutes, yield, ingredients, tag, status, is_main) VALUES(?,?,?,?,?,?,?,?,?,1)",
+                      (key, key, name, "Hoofdgerecht", 30, serves, json.dumps(ings), "meat", "ok"))
+            self.db.x("INSERT INTO menu_items(start, day, url, reason, active, created_at) VALUES(?,?,?,?,1,?)",
+                      (self.start.isoformat(), (self.start + timedelta(days=i)).isoformat(), key, "", "x"))
+
+    def tearDown(self):
+        self.c.CART, self.c.SEARCH, self.c.ORDERS = self._old
+        self.srv.shutdown()
+
+    def run_match(self, **kw):
+        return self.m.match_menu(self.db, self.start, {}, threading.Event(), **kw)
+
+    def lines(self):
+        items = self.m.items_of(self.db, self.start)
+        totals = self.m.view(self.db, self.start, items)
+        return {i["name"].lower(): i for i in items}, totals
+
+    def test_pack_sizes(self):
+        P = self.m.pack_size
+        self.assertEqual(P("BONI BIO citroenen 500g"), ("g", 500))
+        self.assertEqual(P("BONI Citroenen 1kg"), ("g", 1000))
+        self.assertEqual(P("Volle melk 1 L"), ("ml", 1000))
+        self.assertEqual(P("Pils 6 x 33cl"), ("ml", 1980))
+        self.assertEqual(P("Eieren 12 st"), ("", 12))
+        self.assertEqual(P("Room 1,5 dl".replace("dl", "cl")), ("ml", 15))
+        self.assertIsNone(P("Citroenen"))
+        N = self.m.packs_needed
+        self.assertEqual(N({"g": 1200}, "Gehakt 500g"), 3)
+        self.assertEqual(N({"g": 500}, "Gehakt 500g"), 1)
+        self.assertEqual(N({"": 5}, "Eieren 12 st"), 1)
+        self.assertEqual(N({"": 3}, "Uien 1kg"), 1)            # pieces against a weight pack: cannot compare, one pack
+        self.assertEqual(N({"g": 99999}, "Gehakt 500g"), 20)   # capped
+
+    def test_rule_matching_quantities_and_memory(self):
+        summary = self.run_match()
+        self.assertEqual((summary["chosen"], summary["none"], summary["remembered"]), (4, 1, 0))
+        by_name, totals = self.lines()
+        gehakt = by_name["gemengd gehakt"]["match"]
+        self.assertEqual((gehakt["status"], gehakt["product"]["name"], gehakt["qty"], gehakt["by"]), ("matched", "Gemengd gehakt 0 250g", 5, "regel"))  # 1,2 kg
+        self.assertEqual(by_name["room"]["match"]["qty"], 1)
+        self.assertEqual(by_name["peterselie"]["match"]["status"], "none")
+        self.assertNotIn("zout", by_name)                                             # staples are not bought
+        self.assertEqual((totals["open"], totals["matched"], totals["added"]), (5, 4, 0))
+        self.assertAlmostEqual(totals["estimate"], 5 * 1.29 + 3 * 1.29, 2)
+        searches = [x for x in MockCollectAndGo.seen if "bySearchTerm" in x[1]]
+        self.assertEqual(len(searches), 6)                                            # 5 lines; the one without results is tried in both catalogues
+        # a rebuilt list (or next week's menu) reuses the remembered products without searching again
+        self.db.x("DELETE FROM shopping_matches")
+        MockCollectAndGo.seen.clear()
+        summary = self.run_match()
+        self.assertEqual((summary["remembered"], summary["chosen"]), (4, 0))
+        self.assertEqual(len([x for x in MockCollectAndGo.seen if "bySearchTerm" in x[1]]), 2)   # only the one never found (both catalogues)
+
+    def test_user_choice_is_kept_and_remembered(self):
+        self.run_match()
+        by_name, _ = self.lines()
+        key = by_name["gemengd gehakt"]["key"]
+        other = by_name["gemengd gehakt"]["match"]["candidates"][2]
+        self.db.save_settings({"persons": 8})                                          # the need doubles: packs are recounted
+        self.assertEqual(self.lines()[0]["gemengd gehakt"]["match"]["qty"], 10)
+        self.m.set_choice(self.db, self.start, key, other["entry_id"], 2)
+        chosen = self.lines()[0]["gemengd gehakt"]["match"]
+        self.assertEqual((chosen["product"]["name"], chosen["qty"], chosen["by"]), ("Gemengd gehakt 2 750g", 2, "jij"))
+        self.db.save_settings({"persons": 4})                                          # your own choice is left alone
+        self.assertEqual(self.lines()[0]["gemengd gehakt"]["match"]["qty"], 2)
+        with self.assertRaises(ValueError):
+            self.m.set_choice(self.db, self.start, key, "does-not-exist", 1)
+        self.m.set_choice(self.db, self.start, key, skip=True)
+        self.assertEqual(self.lines()[0]["gemengd gehakt"]["match"]["status"], "skipped")
+        self.db.x("DELETE FROM shopping_matches")
+        self.run_match()
+        self.assertEqual(self.lines()[0]["gemengd gehakt"]["match"]["product"]["name"], "Gemengd gehakt 2 750g")   # remembered for next time
+
+    def test_fill_cart_once_skips_ticked_and_survives_a_refusal(self):
+        self.run_match()
+        by_name, _ = self.lines()
+        self.shopping.set_checked(self.db, self.start, by_name["wortels"]["key"], True)   # already at home
+        refused = by_name["room"]["match"]["product"]["entry_id"]
+        MockCollectAndGo.refuse = {refused}
+        progress = {}
+        self.m.fill_cart(self.db, self.start, progress, threading.Event())
+        self.assertEqual((progress["ok"], progress["failed"]), (2, 1))
+        in_cart = {i["_product"]: i["quantity"] for i in MockCollectAndGo.cart}
+        self.assertEqual(in_cart[by_name["gemengd gehakt"]["match"]["product"]["entry_id"]], "5")
+        self.assertNotIn(by_name["wortels"]["match"]["product"]["entry_id"], in_cart)
+        by_name, totals = self.lines()
+        self.assertIn("_ERR_PROD_NOT_ORDERABLE", by_name["room"]["match"]["error"])
+        self.assertEqual(totals["added"], 2)
+        self.assertIsNone(self.db.one("SELECT key FROM product_map WHERE key=?", (by_name["room"]["key"],)))   # not proposed again
+        posts = len([x for x in MockCollectAndGo.seen if x[0] == "POST"])
+        self.m.fill_cart(self.db, self.start, progress, threading.Event())            # second click: only the failed line is retried
+        self.assertEqual(len([x for x in MockCollectAndGo.seen if x[0] == "POST"]), posts + 1)
+        self.assertEqual({i["_product"]: i["quantity"] for i in MockCollectAndGo.cart}, in_cart)
+
+    def test_ai_choice_is_validated(self):
+        import ai
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), MockAI)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        old_url, ai.API_URL = ai.API_URL, f"http://127.0.0.1:{srv.server_address[1]}/v1/messages"
+        os.environ["ANTHROPIC_API_KEY"] = "test-key"
+        self.db.save_settings({"ai_matching": True, "brand_preference": "huismerk"})
+        try:
+            summary = self.run_match()
+            by = [i["match"] for i in self.m.items_of(self.db, self.start) if self.m.view(self.db, self.start, [i]) and i.get("match")]
+            how = sorted(m["by"] for m in by)
+            self.assertEqual(how.count("AI"), 3)                     # two picks and one "none of these"
+            self.assertEqual(how.count("regel"), 1)                  # the out-of-range pick fell back to the rule
+            self.assertEqual(summary["none"], 2)                     # the AI's null plus the line without search results
+            ai_matched = [m for m in by if m["by"] == "AI" and m["status"] == "matched"]
+            self.assertTrue(all(m["qty"] == 2 and m["product"]["name"].split()[-2] == "1" for m in ai_matched), ai_matched)
+            self.assertEqual(self.db.one("SELECT COUNT(*) AS n FROM ai_usage WHERE purpose='matching'")["n"], 1)
+        finally:
+            ai.API_URL = old_url
+            os.environ.pop("ANTHROPIC_API_KEY", None)
+            srv.shutdown()
 
 
 if __name__ == "__main__":

@@ -125,11 +125,38 @@ function shopText(m) {
   }
   return out.join("\n");
 }
+const euro = (v) => v == null ? "" : "€ " + Number(v).toFixed(2).replace(".", ",");
+function matchLine(m, i) {
+  const x = i.match;
+  if (!x || i.checked) return "";
+  const attrs = `data-mkey="${esc(i.key)}" data-start="${m.start}"`;
+  if (x.status === "none") return `<div class="cg muted">Geen product gevonden bij Colruyt</div>`;
+  const cands = x.candidates || [];
+  const current = x.product ? x.product.entry_id : "";
+  const options = cands.map((c) => `<option value="${esc(c.entry_id)}" ${c.entry_id === current ? "selected" : ""}>${esc(c.name)}${c.price == null ? "" : " – " + euro(c.price)}</option>`).join("");
+  const select = `<select ${attrs} data-match="1" aria-label="Product voor ${esc(i.name)}">${options}<option value="" ${x.status === "skipped" ? "selected" : ""}>Niet via Colruyt kopen</option></select>`;
+  if (x.status === "skipped") return `<div class="cg">${select}</div>`;
+  const how = { AI: "gekozen door AI", regel: "automatisch gekozen", onthouden: "onthouden van eerder", jij: "jouw keuze" }[x.by] || "";
+  const state = x.error ? `<span class="bad">Niet toegevoegd: ${esc(x.error)}</span>` : x.added_at ? `<span class="good">in winkelmand</span>` : `<span class="muted">${how}</span>`;
+  return `<div class="cg"><input type="number" min="1" max="50" value="${x.qty || 1}" ${attrs} data-qty="1" aria-label="Aantal verpakkingen van ${esc(i.name)}"><span class="muted">×</span>${select}${state}</div>`;
+}
 function shopRow(m, i) {
   const extra = i.also_unmeasured ? " + wat extra" : "";
   const from = shopDetails && i.recipes.length ? `<div class="muted">${esc(i.recipes.join(" · "))}</div>${i.lines.map((l) => `<div class="muted raw">${esc(l)}</div>`).join("")}` : "";
   return `<li class="${i.checked ? "done" : ""}"><label><input type="checkbox" data-check="${esc(i.key)}" data-start="${m.start}" ${i.checked ? "checked" : ""}>
-    <span class="what">${esc(i.name)}${from}</span></label><span class="amount">${esc(i.amount + (i.amount ? extra : ""))}</span></li>`;
+    <span class="what">${esc(i.name)}${from}</span></label><span class="amount">${esc(i.amount + (i.amount ? extra : ""))}</span>${matchLine(m, i)}</li>`;
+}
+function colruytBar(m, busy) {
+  const c = S.colruyt, t = m.shopping.colruyt || {};
+  if (!c.connected) return `<div class="cgbar"><span class="muted">Verbind met Collect&amp;Go op het tabblad Colruyt om deze lijst aan producten te koppelen en in je winkelmand te zetten.</span></div>`;
+  if (c.ok === false) return `<div class="cgbar"><span class="bad">De Collect&amp;Go-sessie is verlopen. Verbind opnieuw op het tabblad Colruyt.</span></div>`;
+  const left = t.matched - t.added;
+  const summary = t.searched ? `<b>${t.matched} van ${t.open}</b> gekoppeld aan een Colruyt-product${t.estimate ? `, geschat ${euro(t.estimate)}` : ""}${t.added ? `, ${t.added} al in je winkelmand` : ""}` : "Nog geen Colruyt-producten gezocht voor deze lijst.";
+  return `<div class="cgbar"><span>${summary}</span><span class="row">
+    <button class="btn" data-cgjob="match" data-start="${m.start}" ${busy ? "disabled" : ""}>${t.searched ? "Zoek ontbrekende producten" : "Zoek producten bij Colruyt"}</button>
+    ${t.searched ? `<button class="btn primary" data-cgjob="fill" data-start="${m.start}" ${busy || left <= 0 ? "disabled" : ""}>Zet ${left > 0 ? left + " " : ""}in winkelmand</button>` : ""}
+    ${t.added ? `<a class="btn" href="https://www.collectandgo.be" target="_blank" rel="noopener">Open Collect&amp;Go</a>` : ""}</span></div>
+    ${t.searched ? `<p class="muted" style="margin:8px 0 0">Controleer de keuzes hieronder: kies een ander product of pas het aantal verpakkingen aan. Je keuzes worden onthouden voor volgende weken. Bestellen en betalen doe je zelf in Collect&amp;Go.</p>` : ""}`;
 }
 function renderShopping() {
   const root = $("#tab-shopping"), m = shopMenu();
@@ -147,6 +174,7 @@ function renderShopping() {
         <button class="btn" id="shopcopy">Kopieer als tekst</button>
         <button class="btn" id="shopdetails">${shopDetails ? "Verberg details" : "Toon details"}</button>
         ${S.ai.available && L.method === "regels" ? `<button class="btn" data-tidy="${m.start}" ${busy ? "disabled" : ""}>Opschonen met AI</button>` : ""}</div></div>
+    ${colruytBar(m, busy)}
     ${L.count ? cats : `<p class="muted" style="margin-top:14px">Geen ingrediënten gevonden voor dit menu.</p>`}
     ${pantry}</div>`;
 }
@@ -214,6 +242,13 @@ function renderSettings() {
       <div class="hint">Eén product per regel. Staan apart onderaan de lijst.</div></div>
     <div class="field"><label for="wx">Altijd toevoegen</label><div><textarea id="wx" name="weekly_extras" placeholder="bv. melk">${esc(s.weekly_extras.join("\n"))}</textarea></div>
       <div class="hint">Vaste producten die elke week op de lijst komen.</div></div>
+    <div class="field"><label for="bp">Voorkeur bij Colruyt</label><div><select id="bp" name="brand_preference">
+      <option value="goedkoop" ${s.brand_preference === "goedkoop" ? "selected" : ""}>goedkoopste geschikte product</option>
+      <option value="huismerk" ${s.brand_preference === "huismerk" ? "selected" : ""}>huismerk Boni, daarna goedkoopste</option>
+      <option value="bio" ${s.brand_preference === "bio" ? "selected" : ""}>bio, daarna Boni</option></select></div>
+      <div class="hint">Geldt voor nieuwe keuzes; wat je zelf koos of wat al onthouden is, blijft.</div></div>
+    <div class="field"><label for="aim">Colruyt-producten kiezen met AI</label><div><input id="aim" type="checkbox" name="ai_matching" ${s.ai_matching ? "checked" : ""}></div>
+      <div class="hint">${S.ai.available ? "Eén AI-oproep per keer dat er nieuwe producten gezocht worden. Uit: het eerste zoekresultaat dat bij de naam past." : "Geen API-sleutel ingesteld: het eerste zoekresultaat dat bij de naam past wordt gekozen."}</div></div>
     <div class="field"><label for="aib">Lijst opschonen met AI</label><div><input id="aib" type="checkbox" name="ai_shopping" ${s.ai_shopping ? "checked" : ""}></div>
       <div class="hint">${S.ai.available ? "Eén AI-oproep wanneer je een menu goedkeurt: voegt dezelfde producten samen en zet ze in het juiste rayon. De hoeveelheden worden altijd door de app zelf opgeteld." : "Geen API-sleutel ingesteld: de lijst wordt met regels samengesteld."}</div></div>
     <h3>Tijd</h3>
@@ -255,7 +290,8 @@ function readSettings(form) {
   const f = new FormData(form), out = { mix: {} };
   for (const t of S.tags) out.mix[t] = { min: +f.get(`mix.${t}.min`), max: +f.get(`mix.${t}.max`) };
   for (const k of ["weekday_max_minutes", "weekend_max_minutes", "no_repeat_weeks", "run_weekday", "start_offset_days", "crawl_pause_seconds", "persons"]) out[k] = +f.get(k);
-  for (const k of ["strict_vegetarian", "ai_selection", "ai_tagging", "auto_run", "season_filter", "everyday_only", "ai_shopping"]) out[k] = f.get(k) === "on";
+  for (const k of ["strict_vegetarian", "ai_selection", "ai_tagging", "auto_run", "season_filter", "everyday_only", "ai_shopping", "ai_matching"]) out[k] = f.get(k) === "on";
+  out.brand_preference = f.get("brand_preference");
   for (const k of ["winter_words", "summer_words", "rare_words", "staples", "weekly_extras"]) out[k] = f.get(k);
   out.long_days = f.getAll("long_days").map(Number);
   out.unknown_time = f.get("unknown_time");
@@ -335,6 +371,7 @@ document.addEventListener("click", (e) => {
   if (t.id === "cgcopy") return navigator.clipboard.writeText($("#cgdebug").textContent).then(() => toast("Details gekopieerd"), () => toast("Kopiëren lukt hier niet; selecteer de tekst"));
   if (t.id === "cgdisconnect") { cgResult = null; return cgAct(() => api("api/colruyt/disconnect", {}), "Verbinding verbroken"); }
   if (d.cgtest) { t.disabled = true; t.textContent = "Bezig…"; return cgAct(() => api("api/colruyt/test", { mode: d.cgtest, query: ($("#cgq") || {}).value || "melk" })); }
+  if (d.cgjob) return act(() => api("api/job", { kind: d.cgjob, start: d.start }), d.cgjob === "match" ? "Producten worden gezocht; dit duurt enkele seconden per product" : "Producten worden in je winkelmand gezet");
   if (d.tidy) return act(() => api("api/job", { kind: "tidy", start: d.tidy }), "Lijst wordt opgeschoond");
   if (t.id === "shopdetails") { shopDetails = !shopDetails; return renderShopping(); }
   if (t.id === "toggleings") {
@@ -356,6 +393,11 @@ document.addEventListener("submit", (e) => {
 document.addEventListener("change", (e) => {
   const d = e.target.dataset;
   if (e.target.id === "shopsel") { shopStart = e.target.value; return renderShopping(); }
+  if (d.match || d.qty) {
+    const row = e.target.closest(".cg"), sel = row.querySelector("select"), qty = row.querySelector("input[type=number]");
+    e.target.blur();
+    return act(() => api("api/match", sel.value ? { start: d.start, key: d.mkey, entry_id: sel.value, qty: qty ? +qty.value : 1 } : { start: d.start, key: d.mkey, skip: true }));
+  }
   if (d.check) {
     const m = S.menus.find((x) => x.start === d.start), on = e.target.checked;
     for (const c of m.shopping.categories) for (const i of c.items) if (i.key === d.check) i.checked = on;

@@ -226,9 +226,8 @@ class Client:
             for value in (i.get("partNumber"), i.get("productId"), i.get("catEntryId"), i.get("catalogEntryId"),
                           i.get("xitem_technicalId"), i.get("xitem_parentProductId"), entry.get("uniqueID"), entry.get("partNumber")):
                 ids |= _id_forms(value)
-            name = " ".join(str(x) for x in (i.get("xitem_BrandName"), i.get("xitem_productName") or i.get("xitem_LongNameDescription")
-                                             or i.get("productName") or i.get("description") or entry.get("name"),
-                                             i.get("xitem_LongNameContent")) if x)
+            name = str(i.get("xitem_productName") or i.get("xitem_LongNameDescription") or i.get("productName")
+                       or i.get("description") or entry.get("name") or "")
             items.append({"id": str(i.get("orderItemId") or i.get("itemId") or ""),
                           "entry_id": str(i.get("partNumber") or i.get("catEntryId") or i.get("productId") or ""),
                           "name": name or str(i.get("partNumber") or ""), "quantity": _num(i.get("quantity")) or 1,

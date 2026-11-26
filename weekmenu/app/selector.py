@@ -261,6 +261,7 @@ def generate(db, start=None, use_ai=None, seed=None, today=None):
     db.x("DELETE FROM menus WHERE start=?", (start.isoformat(),))
     db.x("DELETE FROM shopping_checks WHERE start=?", (start.isoformat(),))
     db.x("DELETE FROM shopping_ai WHERE start=?", (start.isoformat(),))
+    db.x("DELETE FROM shopping_matches WHERE start=?", (start.isoformat(),))
     pool = load_pool(db, settings, today, skip_urls=previous, when=start)
     if len(pool) < 7 and previous:
         pool = load_pool(db, settings, today, when=start)

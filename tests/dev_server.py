@@ -18,7 +18,21 @@ if _photos and os.path.isdir(_photos):
         with open(os.path.join(_photos, _name), "rb") as _f:
             test_weekmenu.PLACEHOLDERS[_name] = _f.read()
 
+# optional stand-in Collect&Go shop: WEEKMENU_DEV_SHOP=1 connects the app to the fake gateway from the tests
+if os.environ.get("WEEKMENU_DEV_SHOP"):
+    import threading
+    from http.server import ThreadingHTTPServer
+
+    import colruyt
+    _shop = ThreadingHTTPServer(("127.0.0.1", 0), test_weekmenu.MockCollectAndGo)
+    threading.Thread(target=_shop.serve_forever, daemon=True).start()
+    _base = f"http://127.0.0.1:{_shop.server_address[1]}"
+    colruyt.CART, colruyt.SEARCH, colruyt.ORDERS = _base + "/cartsvc/store/90004", _base + "/searchsvc/store/90004", _base + "/ordersvc/store/90004"
+
 if __name__ == "__main__":
     main.DEV = True
+    if os.environ.get("WEEKMENU_DEV_SHOP"):
+        from db import DB
+        colruyt.connect(DB(), test_weekmenu.ColruytTests.GOOD)
     print("data:", os.environ["WEEKMENU_DATA"], "| fake site:", os.environ["WEEKMENU_BASE"], flush=True)
     main.main()

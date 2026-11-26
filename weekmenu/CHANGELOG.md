@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.0
+- Boodschappen: koppel de lijst aan Colruyt-producten (uit het assortiment van je winkel) met een voorstel voor product en aantal verpakkingen.
+- Je kunt elk product en aantal aanpassen of een lijn overslaan; keuzes worden onthouden voor volgende weken.
+- "Zet in winkelmand" plaatst de gekoppelde producten in je Collect&Go-winkelmand. Bestellen en betalen blijft bij jou.
+- Instellingen: voorkeur (goedkoopste, Boni of bio) en kiezen met AI.
+
 ## 0.4.5
 - Collect&Go: een lege winkelmand wordt herkend. De winkel antwoordt dan met een fout (HTTP 500) in plaats van een lege lijst.
 

@@ -108,6 +108,24 @@ De app bewaart alleen de sessiecookies (nooit je wachtwoord of sms-code) en toon
 Een sessie blijft dagen tot weken geldig; de app controleert ze één keer per dag en meldt het
 wanneer je opnieuw moet verbinden.
 
+### Van boodschappenlijst naar winkelmand
+
+Op het tabblad **Boodschappen** verschijnt, zodra de koppeling werkt, een blok voor Colruyt:
+
+1. **Zoek producten bij Colruyt** zoekt voor elke lijn een product in het assortiment van jouw winkel
+   en stelt een aantal verpakkingen voor. Dat duurt enkele seconden per product, omdat de app de
+   winkel niet mag overbelasten. Producten die je al eens koos worden zonder zoeken hergebruikt.
+2. Controleer de keuzes: kies een ander product uit de lijst, pas het aantal aan, of kies
+   "Niet via Colruyt kopen". Je keuzes worden onthouden voor volgende weken.
+3. **Zet in winkelmand** plaatst alles wat gekoppeld en niet afgevinkt is in je Collect&Go-winkelmand.
+   Wat al toegevoegd is, wordt niet nog eens toegevoegd. Weigert Collect&Go een product, dan staat
+   de reden bij die lijn en kies je een ander.
+
+Daarna open je Collect&Go, kijk je de winkelmand na, kies je een afhaalmoment en betaal je.
+De geschatte prijs is de som van de getoonde prijzen en kan afwijken van wat Collect&Go aanrekent.
+
+### Testen
+
 Met de testknoppen zie je of de koppeling vanaf jouw toestel werkt: winkelmand lezen, het
 assortiment doorzoeken, en één testproduct toevoegen en weer verwijderen. Bestellen en betalen
 doet de app nooit; dat doe je zelf in Collect&Go.
